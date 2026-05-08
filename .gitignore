@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Runtime / local data
+.env
+.env.*
+!.env.example
+data/
+*.rdb
+
+# Logs
+*.log
+.cloudflared-logs/
+npm-debug.log*
+
+# Test / dev artefacts
+.playwright-mcp/
+coverage/
+.nyc_output/
+
+# Screenshots from local testing
+*.png
+!public/icons/*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

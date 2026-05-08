@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>B4us — cargando…</title>
+  <style>
+    body { background: #0a0f1c; color: #e6e6e8; font-family: system-ui, sans-serif;
+           display: flex; align-items: center; justify-content: center;
+           min-height: 100vh; margin: 0; }
+  </style>
+  <!-- GitHub Pages serves this file for any unmatched path inside the repo
+       scope. We grab the deep route, redirect to the SPA root with the
+       route in a query param, and the app picks it up on load. Only used
+       on the very first visit to a deep link before the service worker
+       is registered (the SW intercepts subsequent visits). -->
+  <script>
+    (function () {
+      var l = window.location;
+      var segs = l.pathname.split('/').filter(Boolean);
+      var keep = l.hostname.endsWith('.github.io') ? 1 : 0; // /<repo>/ for GH Pages, / elsewhere
+      var rest = segs.slice(keep).join('/');
+      var base = '/' + segs.slice(0, keep).join('/');
+      if (base !== '/') base += '/';
+      var target = l.protocol + '//' + l.host + base + (rest ? '?p=' + encodeURIComponent(rest) : '') + l.hash;
+      l.replace(target);
+    })();
+  </script>
+</head>
+<body>
+  <p>Cargando…</p>
+</body>
+</html>

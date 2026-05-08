@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <!-- Base URL injector: makes relative asset URLs resolve correctly even
+       when the SPA serves index.html for a deep route (e.g. /BUS/stop/123).
+       Computed from the location so the same HTML works at the origin root
+       (bus.carloscyberseces.com/) and under a GitHub Pages subpath
+       (<user>.github.io/BUS/). Must run before any <link> or <script>. -->
+  <script>
+    (function () {
+      var base = '/';
+      if (location.hostname.endsWith('.github.io')) {
+        var seg = location.pathname.split('/').filter(Boolean)[0];
+        if (seg) base = '/' + seg + '/';
+      }
+      document.write('<base href="' + base + '">');
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>B4us — ETA en vivo · Madrid</title>
+  <meta name="description"
+    content="Tiempos de llegada en tiempo real de autobuses, metro y cercanías del CRTM en Madrid. Aplicación independiente no oficial." />
+  <meta name="theme-color" content="#0a0f1c" />
+  <meta name="color-scheme" content="dark" />
+
+  <!-- Open Graph (deep links shared on WhatsApp/Telegram pre-render this) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="B4us — ETA en vivo · Madrid" />
+  <meta property="og:description" content="Llegadas reales del transporte público de Madrid: interurbanos, metro, cercanías y EMT, con countdown segundo a segundo." />
+  <meta property="og:locale" content="es_ES" />
+  <meta property="og:site_name" content="B4us" />
+  <meta name="twitter:card" content="summary" />
+
+  <!-- iOS PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="B4us" />
+  <link rel="apple-touch-icon" href="icons/icon-192.svg" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="icons/icon-192.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="index.css" />
+</head>
+
+<body>
+  <!-- App Shell -->
+  <div class="app" id="app">
+
+    <!-- Top Bar -->
+    <header class="topbar" id="topbar">
+      <div class="topbar-left">
+        <button id="btn-menu" class="icon-btn" aria-label="Menú">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round">
+            <path d="M3 12h18M3 6h18M3 18h18" />
+          </svg>
+        </button>
+        <div class="topbar-title">
+          <span class="brand">B<span class="brand-mark">4</span>us</span>
+          <span class="brand-sub" id="conn-status" role="status" aria-live="polite">
+            <span class="conn-dot" id="conn-dot" aria-hidden="true"></span>
+            <span id="conn-text">Desconectado</span>
+          </span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button id="btn-theme" class="icon-btn" aria-label="Cambiar tema" title="Cambiar tema">
+          <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+          </svg>
+          <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </button>
+        <button id="btn-install" class="icon-btn hidden" aria-label="Instalar app" title="Instalar app">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4" />
+            <path d="M5 21h14" />
+          </svg>
+        </button>
+        <button id="btn-nearby" class="icon-btn" aria-label="Paradas cercanas">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round">
+            <circle cx="12" cy="10" r="3" />
+            <path d="M12 2a8 8 0 0 0-8 8c0 5.4 8 12 8 12s8-6.6 8-12a8 8 0 0 0-8-8z" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Search -->
+    <div class="search-wrap" id="search-wrap">
+      <div class="search-box">
+        <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <path d="m21 21-4.35-4.35" />
+        </svg>
+        <label for="search-input" class="visually-hidden">Buscar parada</label>
+        <input id="search-input" type="search" placeholder="Buscar parada o código..." autocomplete="off"
+          enterkeyhint="search" aria-label="Buscar parada por nombre o código" />
+        <button id="search-clear" class="search-clear hidden" aria-label="Limpiar búsqueda">&times;</button>
+      </div>
+    </div>
+
+    <!-- Main scrollable area -->
+    <main class="main-content" id="main-content">
+
+      <!-- Search Results -->
+      <section id="search-results" class="card-list hidden" aria-label="Resultados de búsqueda"></section>
+
+      <!-- Favorites -->
+      <section id="favorites-section" class="card-list" aria-label="Paradas favoritas">
+        <div class="section-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+          </svg>
+          Favoritos
+          <button id="favs-toggle-prefs" class="ghost-btn" aria-label="Preferencias">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </div>
+        <div id="favorites-list" role="list"></div>
+        <div id="favorites-empty" class="empty-msg">
+          <p>Sin favoritos</p>
+          <p class="hint">Busca una parada y pulsa ★</p>
+        </div>
+      </section>
+
+      <!-- ETA Panel -->
+      <section id="eta-panel" class="hidden" aria-label="Próximas llegadas">
+        <div class="eta-header">
+          <button id="eta-back" class="icon-btn" aria-label="Volver al listado">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+          <div class="eta-title">
+            <h2 id="eta-stop-name">—</h2>
+            <span id="eta-stop-code" class="code-tag" aria-label="Código de parada"></span>
+          </div>
+          <button id="btn-share" class="icon-btn" aria-label="Compartir parada" title="Compartir">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" aria-hidden="true">
+              <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+              <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98" />
+            </svg>
+          </button>
+          <button id="btn-fav" class="icon-btn fav-btn" aria-label="Marcar como favorita" aria-pressed="false">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" aria-hidden="true">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+            </svg>
+          </button>
+        </div>
+
+        <div id="arrivals-list" class="arrivals" role="region" aria-live="polite" aria-atomic="false">
+          <div class="skeleton" aria-hidden="true">
+            <div class="sk-row"></div>
+            <div class="sk-row"></div>
+            <div class="sk-row"></div>
+          </div>
+        </div>
+
+        <div id="eta-empty" class="empty-msg hidden">
+          <p>🌙 Sin próximas llegadas</p>
+          <p class="hint">El servicio puede haber terminado</p>
+        </div>
+
+        <div class="eta-footer">
+          <span id="eta-updated">—</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- Map (background layer) -->
+    <div id="map-container" class="map-layer" role="region" aria-label="Mapa de paradas">
+      <div id="map"></div>
+      <button id="btn-expand-map" class="map-expand-btn" aria-label="Expandir mapa">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" aria-hidden="true">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Incident toast -->
+    <div id="incident-banner" class="toast hidden" role="alert">
+      <span aria-hidden="true">⚠️</span>
+      <span id="incident-text"></span>
+      <button id="incident-close" class="toast-close" aria-label="Cerrar aviso">&times;</button>
+    </div>
+
+    <!-- Update toast (when SW pushes a new version) -->
+    <div id="update-banner" class="toast update-toast hidden" role="status">
+      <span aria-hidden="true">⬇️</span>
+      <span>Nueva versión disponible</span>
+      <button id="update-reload" class="toast-action">Recargar</button>
+    </div>
+
+    <!-- Disclaimer footer (legal) -->
+    <footer class="disclaimer">
+      <span class="disclaimer-pill">No oficial</span>
+      <span>Datos del CRTM &middot; sin afiliación</span>
+      <a href="privacy.html" id="link-privacy">Privacidad</a>
+    </footer>
+
+    <!-- Preferences sheet -->
+    <div id="prefs-sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
+      <div class="sheet-card">
+        <h3 id="prefs-title">Preferencias</h3>
+        <label class="pref-row">
+          <span>Vibración al llegar</span>
+          <input type="checkbox" id="pref-vibrate" />
+        </label>
+        <label class="pref-row">
+          <span>Sonido al llegar</span>
+          <input type="checkbox" id="pref-sound" />
+        </label>
+        <label class="pref-row">
+          <span>Auto-actualizar favoritos</span>
+          <input type="checkbox" id="pref-auto-refresh" />
+        </label>
+        <button id="prefs-close" class="sheet-close">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+
+</html>

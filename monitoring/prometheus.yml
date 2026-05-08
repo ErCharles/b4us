@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: bus-backend
+    metrics_path: /metrics
+    # Token must match METRICS_TOKEN in docker-compose.yml. Change BOTH
+    # places if you rotate it (or pass via .env so compose interpolates).
+    authorization:
+      type: Bearer
+      credentials: 23f8cf2dfeebe52455896b17a15fbb41
+    static_configs:
+      - targets: ['backend:3000']
+        labels:
+          service: 'crtm-bus-eta'
+          env: 'self-hosted'
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

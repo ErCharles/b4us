@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Privacidad y aviso legal — B4us</title>
+  <meta name="theme-color" content="#0a0f1c" />
+  <meta name="robots" content="index,follow" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="index.css" />
+  <style>
+    body { overflow: auto; }
+    .doc {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px 20px 64px;
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .doc h1 { font-size: 22px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.3px; }
+    .doc .lead { color: var(--text-2); margin-bottom: 28px; font-size: 13px; }
+    .doc h2 { font-size: 15px; font-weight: 700; margin: 28px 0 10px; color: var(--accent); letter-spacing: 0.2px; }
+    .doc p, .doc ul { color: var(--text-2); }
+    .doc strong { color: var(--text); font-weight: 600; }
+    .doc ul { padding-left: 18px; margin: 6px 0 12px; }
+    .doc li { margin: 4px 0; }
+    .doc .back {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--text-3); text-decoration: none; font-size: 13px;
+      padding: 6px 0;
+    }
+    .doc .back:hover { color: var(--accent); }
+    .doc .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 6px;
+      background: rgba(245, 158, 11, 0.12); color: var(--amber);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+    }
+    .doc footer {
+      margin-top: 36px; padding-top: 16px; border-top: 1px solid var(--border);
+      font-size: 12px; color: var(--text-3);
+    }
+  </style>
+</head>
+
+<body>
+  <main class="doc">
+    <a href="./" class="back">&larr; Volver a la app</a>
+
+    <h1>Privacidad y aviso legal</h1>
+    <p class="lead">B4us &middot; última revisión: mayo de 2026</p>
+
+    <p>
+      <span class="pill">APLICACIÓN NO OFICIAL</span>
+    </p>
+    <p>
+      B4us es un proyecto independiente, sin ánimo de lucro y
+      <strong>sin relación con el Consorcio Regional de Transportes de Madrid (CRTM)</strong>,
+      ni con los operadores de las líneas que muestra (Arriva, Ruiz, etc.). Toda la
+      información se obtiene de la web pública del CRTM en tiempo real con fines
+      meramente informativos. Si la app deja de funcionar es porque la fuente
+      original ha cambiado o no responde — no hay garantías de disponibilidad.
+    </p>
+
+    <h2>Qué datos personales tratamos</h2>
+    <p>Resumen breve: <strong>los mínimos imprescindibles</strong>.</p>
+    <ul>
+      <li>
+        <strong>Favoritos</strong> &mdash; se guardan únicamente en tu navegador
+        (<code>localStorage</code>), nunca llegan a nuestros servidores. Si limpias
+        los datos del sitio se borran.
+      </li>
+      <li>
+        <strong>Geolocalización</strong> &mdash; sólo si pulsas &laquo;cerca de m&iacute;&raquo;.
+        El navegador te pide permiso, y la coordenada se usa una sola vez para
+        consultar paradas próximas. <strong>No se almacena</strong> en disco ni
+        se asocia a ti.
+      </li>
+      <li>
+        <strong>Logs técnicos</strong> &mdash; el servidor mantiene registros
+        agregados (latencia, errores, número de peticiones) durante un máximo
+        de 7 días para diagnosticar incidencias. Tu IP aparece truncada y no
+        se cruza con ningún identificador.
+      </li>
+    </ul>
+
+    <h2>Lo que no hacemos</h2>
+    <ul>
+      <li>No usamos cookies de seguimiento ni analítica de terceros.</li>
+      <li>No vendemos ni compartimos datos con terceros.</li>
+      <li>No te identificamos: no hay cuentas, no hay <em>fingerprinting</em>.</li>
+    </ul>
+
+    <h2>Notificaciones (cuando se habiliten)</h2>
+    <p>
+      Si activas las notificaciones &laquo;tu bus llega en 2 minutos&raquo;, el
+      navegador genera un identificador anónimo (<em>endpoint</em> de Web Push)
+      que se guarda asociado a la parada que vigilas. Puedes revocarlo en
+      cualquier momento desde los ajustes del navegador o pulsando el mismo botón.
+      Sin ese identificador no podemos enviarte avisos; con él no sabemos quién
+      eres &mdash; sólo cuándo despertarte.
+    </p>
+
+    <h2>Tus derechos (RGPD)</h2>
+    <p>
+      Tienes derecho a acceder, rectificar y suprimir tus datos. Como no hay
+      cuentas, en la práctica esto se reduce a:
+    </p>
+    <ul>
+      <li>Borrar favoritos &rarr; ajustes del navegador &rarr; borrar datos del sitio.</li>
+      <li>Revocar geolocalización &rarr; ajustes del navegador &rarr; permisos.</li>
+      <li>Revocar push &rarr; ajustes del navegador &rarr; notificaciones.</li>
+    </ul>
+    <p>
+      Para cualquier consulta puedes escribir al correo de contacto que aparece
+      en el repositorio del proyecto.
+    </p>
+
+    <h2>Marcas y avisos</h2>
+    <p>
+      &laquo;CRTM&raquo;, &laquo;Madrid&raquo; y los nombres
+      de las líneas o municipios pertenecen a sus respectivos titulares. Su uso
+      aquí es estrictamente descriptivo. Si representas a CRTM o a un operador y
+      tienes alguna observación, contacta y atenderemos cualquier petición razonable.
+    </p>
+
+    <footer>
+      &copy; B4us &middot; proyecto vecinal &middot;
+      <a href="./" style="color: var(--accent); text-decoration: none;">volver</a>
+    </footer>
+  </main>
+</body>
+
+</html>

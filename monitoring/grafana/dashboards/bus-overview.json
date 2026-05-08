@@ -1,0 +1,115 @@
+{
+  "id": null,
+  "uid": "bus-overview",
+  "title": "B4us Overview",
+  "tags": ["bus", "crtm"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP request rate (per route)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (route_path) (rate(http_request_summary_seconds_count[1m]))", "legendFormat": "{{route_path}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "HTTP latency p95 (s)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (le, route_path) (rate(http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route_path}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "CRTM circuit state (0=closed, 1=half, 2=open)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "targets": [{ "expr": "crtm_circuit_state" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED", "color": "green" }, "1": { "text": "HALF-OPEN", "color": "yellow" }, "2": { "text": "OPEN", "color": "red" } } }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CRTM upstream errors (per endpoint+status)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 6, "y": 8, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "sum by (endpoint, status) (rate(crtm_upstream_errors_total[5m]))", "legendFormat": "{{endpoint}} {{status}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Active SSE connections",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 6 },
+      "targets": [{ "expr": "sum(sse_connections_active)" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "SWR cache events (per state)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (state) (rate(swr_cache_events_total[5m]))", "legendFormat": "{{state}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "CRTM upstream latency p50 / p95 (s)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le, endpoint) (rate(crtm_upstream_latency_seconds_bucket[5m])))", "legendFormat": "p50 {{endpoint}}" },
+        { "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(crtm_upstream_latency_seconds_bucket[5m])))", "legendFormat": "p95 {{endpoint}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Process memory (RSS, MB)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "process_resident_memory_bytes / 1024 / 1024" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Event loop lag (s)",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 22, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "nodejs_eventloop_lag_seconds" }
+      ]
+    }
+  ]
+}

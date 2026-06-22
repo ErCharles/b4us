@@ -106,15 +106,34 @@ const prefSound = $('#pref-sound');
 const prefAutoRefresh = $('#pref-auto-refresh');
 
 // --- Colors ---
-const COLORS = {
-    '521': '#8EBF42', '522': '#E74C3C', '523': '#3498DB', '524': '#F39C12',
-    '525': '#9B59B6', '526': '#1ABC9C', '527': '#E67E22', '528': '#2ECC71',
-    '529': '#E91E63', '510': '#00BCD4', '518': '#FF5722', '520': '#795548',
-    '551': '#607D8B', '581': '#4CAF50', 'N504': '#7C3AED', 'N501': '#6366F1',
-    '1': '#FF6B6B', '2': '#4ECDC4', '3': '#45B7D1', '4': '#96CEB4',
-    '5': '#FFEAA7', '6': '#DDA0DD', '7': '#87CEEB',
+// Official Madrid transport line colours. Metro / Metro Ligero / Cercanías have
+// official per-line hex (Metro de Madrid, Renfe, CRTM manual / Wikidata); EMT,
+// interurbano and urbano use their corporate mode colour; night (búho) → dark.
+const OFFICIAL_COLORS = {
+    metro: { '1': '#30A3DC', '2': '#CD031D', '3': '#FFE114', '4': '#944248', '5': '#96BF0D', '6': '#A0A5A7', '7': '#FAA64A', '8': '#F27CA2', '9': '#A93094', '10': '#084594', '11': '#008B43', '12': '#A49A00', 'R': '#0E4A97' },
+    ml: { 'ML1': '#0066FF', 'ML2': '#892CA0', 'ML3': '#FF0000' },
+    cercanias: { 'C-1': '#66AEDE', 'C-2': '#299538', 'C-3': '#BB29BB', 'C-3a': '#BB29BB', 'C-4': '#0032A0', 'C-4a': '#0032A0', 'C-4b': '#0032A0', 'C-5': '#FFC72C', 'C-7': '#EF3340', 'C-7a': '#EF3340', 'C-8': '#777980', 'C-8a': '#777980', 'C-9': '#936037', 'C-10': '#BAC12D' },
+    emt: { day: '#0072CE', night: '#15171C' },
+    interurbano: { day: '#4FA800', night: '#15171C' },
+    urbano: { day: '#DA291C', night: '#15171C' },
 };
-function lineColor(l) { return COLORS[l] || '#8EBF42'; }
+
+// Resolve a line colour from its short name + codLine (which encodes the CRTM
+// mode: 4 Metro, 5 Cercanías, 6 EMT, 8 interurbano, 9 urbano, 10 Metro Ligero).
+function lineColor(line, lineCode) {
+    const s = String(line || '').trim();
+    const mode = String(lineCode || '').split('_')[0];
+    const night = /^N/i.test(s) || /_N_/.test(String(lineCode || ''));
+    switch (mode) {
+        case '4': return OFFICIAL_COLORS.metro[s] || OFFICIAL_COLORS.metro[s.replace(/^L/i, '')] || '#7A869A';
+        case '10': return OFFICIAL_COLORS.ml['ML' + s.replace(/\D/g, '')] || '#7A869A';
+        case '5': return OFFICIAL_COLORS.cercanias['C-' + s.replace(/^C-?/i, '')] || OFFICIAL_COLORS.cercanias[s] || '#66AEDE';
+        case '6': return night ? OFFICIAL_COLORS.emt.night : OFFICIAL_COLORS.emt.day;
+        case '8': return night ? OFFICIAL_COLORS.interurbano.night : OFFICIAL_COLORS.interurbano.day;
+        case '9': return night ? OFFICIAL_COLORS.urbano.night : OFFICIAL_COLORS.urbano.day;
+        default: return night ? '#15171C' : '#4FA800';
+    }
+}
 
 // --- Map ---
 let map = null;
@@ -660,7 +679,7 @@ function buildArrivalCard(item, idx) {
 
 function updateArrivalCard(card, item) {
     const { first, second } = item;
-    const c = lineColor(first.line);
+    const c = lineColor(first.line, first.lineCode);
 
     const badge = card.querySelector('.line-badge');
     badge.style.background = c;
@@ -711,7 +730,7 @@ function buildNotimeRow(item) {
 
 function updateNotimeRow(row, item) {
     const badge = row.querySelector('.line-badge-sm');
-    badge.style.background = lineColor(item.name);
+    badge.style.background = lineColor(item.name, item.code);
     if (badge.textContent !== String(item.name)) badge.textContent = item.name;
     const txt = row.querySelector('.line-notime-text');
     const t = `Línea ${item.name} — sin tiempo real (consultar horario)`;
@@ -742,7 +761,7 @@ function renderEmptyState(data) {
         linesEl.innerHTML = entries.map(([codLine, s]) => {
             const name = s?.lineName || codLine.split('__')[1] || '?';
             const live = s?.saeActive;
-            return `<span class="empty-line-badge" style="background:${lineColor(name)}"
+            return `<span class="empty-line-badge" style="background:${lineColor(name, codLine)}"
                           title="${esc(codLine)}${live ? ' · GPS activo en CRTM' : ' · sólo horario'}">
                       ${esc(name)}${live ? '' : ' <small>◦</small>'}
                     </span>`;
@@ -882,7 +901,7 @@ async function refreshFavoritesETA() {
             continue;
         }
         slot.innerHTML = `
-          <span class="fav-line" style="color:${lineColor(next.line)}">L ${esc(next.line)}</span>
+          <span class="fav-line" style="color:${lineColor(next.line, next.lineCode)}">L ${esc(next.line)}</span>
           <span class="countdown" data-epoch="${next.arrivalEpoch}">--:--</span>
         `;
     }

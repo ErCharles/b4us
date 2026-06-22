@@ -16,7 +16,7 @@
     "@fastify/static": "^9.1.3",
     "@fastify/compress": "^8.0.0",
     "@fastify/etag": "^6.0.0",
-    "fastify-metrics": "^12.1.0",
+    "fastify-metrics": "^13.2.1",
     "ioredis": "^5.4.2",
     "undici": "^7.18.0"
   }

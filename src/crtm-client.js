@@ -11,13 +11,20 @@ const UA = config.crtm.userAgent;
 const TIMEOUT = config.crtm.timeout;
 const MAX_RETRIES = config.crtm.retries;
 
-// One breaker for the whole CRTM upstream — all calls share fate against
-// the same backend host, so circuit state is global to the host.
-const breaker = new CircuitBreaker({
-    name: 'crtm',
-    threshold: 5,
-    cooldownMs: 15_000,
-});
+// One breaker PER upstream endpoint (keyed by the *.php name). A flaky
+// GetLineLocation must not trip GetStopsTimes — they fail independently.
+const breakers = new Map();
+function getBreaker(endpoint) {
+    let b = breakers.get(endpoint);
+    if (!b) {
+        b = new CircuitBreaker({ name: `crtm:${endpoint}`, threshold: 5, cooldownMs: 15_000 });
+        breakers.set(endpoint, b);
+    }
+    return b;
+}
+
+// Only genuine upstream/transport failures count against the breaker.
+const isUpstreamFailure = (err) => err.upstream === true;
 
 // ---------- Internal helpers ----------
 
@@ -28,102 +35,100 @@ function endpointLabel(path) {
 }
 
 async function crtmFetch(path, retries = MAX_RETRIES) {
-    const url = `${CRTM_BASE}${path}`;
     const endpoint = endpointLabel(path);
-    let lastErr;
+    const breaker = getBreaker(endpoint);
+    // Wrap the WHOLE retry loop in ONE breaker call: a single logical fetch
+    // is one breaker event, so a request with retries=2 can't rack up 3
+    // failures and open the circuit by itself. The breaker fast-fails
+    // (CIRCUIT_OPEN) before we ever enter the loop when it's open.
+    return breaker.execute(() => doFetch(`${CRTM_BASE}${path}`, endpoint, retries), isUpstreamFailure);
+}
 
+async function doFetch(url, endpoint, retries) {
+    let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
         const start = process.hrtime.bigint();
         let statusCode = 0;
         try {
-            const result = await breaker.execute(async () => {
-                const res = await request(url, {
-                    method: 'GET',
-                    headers: {
-                        'User-Agent': UA,
-                        Accept: 'application/json, text/plain, */*',
-                        'Accept-Language': 'es-ES,es;q=0.9',
-                        Referer: 'https://www.crtm.es/',
-                        Origin: 'https://www.crtm.es',
-                    },
-                    headersTimeout: TIMEOUT,
-                    bodyTimeout: TIMEOUT,
-                });
-                statusCode = res.statusCode;
-
-                if (statusCode === 429) {
-                    // Rate-limit: throw so circuit/retry layers see it
-                    const text = await res.body.text().catch(() => '');
-                    const err = new Error(`CRTM rate-limited (429) on ${endpoint}`);
-                    err.statusCode = 429;
-                    err.upstream = true;
-                    err.body = text.substring(0, 200);
-                    throw err;
-                }
-
-                if (statusCode < 200 || statusCode >= 300) {
-                    const text = await res.body.text().catch(() => '');
-                    const err = new Error(`CRTM responded ${statusCode} on ${endpoint}`);
-                    err.statusCode = statusCode;
-                    err.upstream = true;
-                    err.body = text.substring(0, 200);
-                    throw err;
-                }
-
-                const text = await res.body.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch {
-                    const err = new Error(`Invalid JSON from CRTM on ${endpoint}`);
-                    err.upstream = true;
-                    err.body = text.substring(0, 200);
-                    throw err;
-                }
-                if (data && (data.faultcode || data.faultstring)) {
-                    const err = new Error(`CRTM Fault: ${data.faultstring || data.faultcode}`);
-                    err.upstream = true;
-                    throw err;
-                }
-                if (data && data.errorCode && String(data.errorCode) !== '0') {
-                    const err = new Error(`CRTM API Error: ${data.errorMessage || data.errorCode}`);
-                    err.upstream = true;
-                    throw err;
-                }
-                if (data && data.error) {
-                    const err = new Error(`CRTM API Error: ${data.error}`);
-                    err.upstream = true;
-                    throw err;
-                }
-                return data;
+            const res = await request(url, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': UA,
+                    Accept: 'application/json, text/plain, */*',
+                    'Accept-Language': 'es-ES,es;q=0.9',
+                    Referer: 'https://www.crtm.es/',
+                    Origin: 'https://www.crtm.es',
+                },
+                headersTimeout: TIMEOUT,
+                bodyTimeout: TIMEOUT,
             });
+            statusCode = res.statusCode;
+            const text = await res.body.text();
+
+            // 429 = rate limit: always upstream (drives backoff + breaker).
+            if (statusCode === 429) {
+                const err = new Error(`CRTM rate-limited (429) on ${endpoint}`);
+                err.statusCode = 429;
+                err.upstream = true;
+                err.body = text.substring(0, 200);
+                throw err;
+            }
+
+            let data = null;
+            let parsed = false;
+            try { data = JSON.parse(text); parsed = true; } catch { /* not JSON */ }
+
+            // Application-level error envelope (e.g. a non-existent stop). CRTM's
+            // WCF backend returns these even with a 5xx status, but it clearly
+            // PROCESSED the request — it just has nothing. Treat as "no data":
+            // return the body (normalizers yield empty) WITHOUT throwing, so a
+            // typo/bot can't open the breaker or 502-spam. A genuine outage
+            // (connection error, or 5xx with no JSON envelope) still throws below.
+            if (parsed && data && (data.error || (data.errorCode && String(data.errorCode) !== '0'))) {
+                logger.get().warn(
+                    { kind: 'upstream', endpoint, status: String(statusCode), apiError: data.errorMessage || data.message || data.error || data.errorCode },
+                    'CRTM application-level response (returned as empty)'
+                );
+                const dur = Number(process.hrtime.bigint() - start) / 1e9;
+                metrics.observe('crtmUpstreamLatency', dur, { endpoint, status: 'apierr' });
+                return data;
+            }
+
+            // Genuine transport/server failure → upstream (breaker counts).
+            if (statusCode < 200 || statusCode >= 300) {
+                const err = new Error(`CRTM responded ${statusCode} on ${endpoint}`);
+                err.statusCode = statusCode;
+                err.upstream = true;
+                err.body = text.substring(0, 200);
+                throw err;
+            }
+            // 2xx but unparseable, or a SOAP-style server fault → upstream.
+            if (!parsed) {
+                const err = new Error(`Invalid JSON from CRTM on ${endpoint}`);
+                err.upstream = true;
+                err.body = text.substring(0, 200);
+                throw err;
+            }
+            if (data && (data.faultcode || data.faultstring)) {
+                const err = new Error(`CRTM Fault: ${data.faultstring || data.faultcode}`);
+                err.upstream = true;
+                throw err;
+            }
 
             const dur = Number(process.hrtime.bigint() - start) / 1e9;
             metrics.observe('crtmUpstreamLatency', dur, { endpoint, status: String(statusCode) });
-            return result;
+            return data;
         } catch (err) {
             const dur = Number(process.hrtime.bigint() - start) / 1e9;
-            const status = String(err.statusCode || (err.code === 'CIRCUIT_OPEN' ? 'open' : 'err'));
+            const status = String(err.statusCode || 'err');
             metrics.observe('crtmUpstreamLatency', dur, { endpoint, status });
             metrics.inc('crtmUpstreamErrors', { endpoint, status });
             lastErr = err;
 
-            // Differentiated logging: structured marker so ops can split
-            // "the upstream is broken" from "our handlers blew up".
             logger.get().warn(
-                {
-                    kind: 'upstream',
-                    endpoint,
-                    status,
-                    attempt: attempt + 1,
-                    err: err.message,
-                    circuit: breaker.snapshot().state,
-                },
+                { kind: 'upstream', endpoint, status, attempt: attempt + 1, err: err.message },
                 'CRTM upstream error'
             );
-
-            // Don't retry past breaker-open or 429 (already had its own backoff)
-            if (err.code === 'CIRCUIT_OPEN') break;
 
             if (err.statusCode === 429) {
                 const wait = Math.min(1000 * 2 ** attempt, 5000);
@@ -137,16 +142,20 @@ async function crtmFetch(path, retries = MAX_RETRIES) {
     throw lastErr;
 }
 
+// Aggregate snapshot across all per-endpoint breakers for /health.
 function getBreakerSnapshot() {
-    return breaker.snapshot();
-}
-
-function lineCode(mode, line) {
-    return `${mode}__${line}___`;
-}
-
-function stopCode(mode, stop) {
-    return `${mode}_${stop}`;
+    let state = 0;
+    let failures = 0;
+    let openedAt = 0;
+    const byEndpoint = {};
+    for (const [, b] of breakers) {
+        const s = b.snapshot();
+        byEndpoint[s.name] = s.state;
+        if (s.state > state) state = s.state;
+        failures += s.failures;
+        if (s.openedAt && s.openedAt > openedAt) openedAt = s.openedAt;
+    }
+    return { state, failures, openedAt: openedAt || null, byEndpoint };
 }
 
 // ---------- Stops ----------
@@ -214,15 +223,7 @@ async function getIncidents(modeCod, codLine) {
     );
 }
 
-async function getLinesTimeplanning(codLine) {
-    return crtmFetch(
-        `/GetLinesTimePlanning.php?activeItinerary=1&codLine=${encodeURIComponent(codLine)}`
-    );
-}
-
 module.exports = {
-    lineCode,
-    stopCode,
     getStopInfo,
     searchStops,
     getStopsByMunicipality,
@@ -234,6 +235,5 @@ module.exports = {
     getLineInfo,
     getLineLocation,
     getIncidents,
-    getLinesTimeplanning,
     getBreakerSnapshot,
 };

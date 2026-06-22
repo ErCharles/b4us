@@ -2,6 +2,12 @@
 
 const crtm = require('../crtm-client');
 const { swr } = require('../cache');
+const config = require('../config');
+
+// Live ETA endpoints poll frequently; use a short fresh window (so each poll
+// gets near-live data) and a short negative window (so a 1s CRTM blip doesn't
+// freeze a stop for the default 30s).
+const LIVE_OPTS = { freshTtl: config.cache.liveFreshTtl, negativeTtl: config.cache.liveNegativeTtl };
 
 // ---------- Reusable schema fragments ----------
 
@@ -27,7 +33,6 @@ const muniSchema = {
 };
 
 const STABLE_CACHE = 'public, max-age=300, stale-while-revalidate=86400, stale-if-error=600';
-const VOLATILE_CACHE = 'no-store';
 
 async function stopsRoutes(fastify) {
     // Search stops by name
@@ -66,8 +71,8 @@ async function stopsRoutes(fastify) {
     }, async (req, reply) => {
         const { codStop } = req.params;
         const key = `stops:times:${codStop}`;
-        const data = await swr(key, () => crtm.getStopTimes(codStop));
-        reply.header('Cache-Control', VOLATILE_CACHE);
+        const data = await swr(key, () => crtm.getStopTimes(codStop), LIVE_OPTS);
+        reply.header('Cache-Control', 'no-store');
         return normalizeStopTimes(data, codStop);
     });
 
@@ -127,22 +132,33 @@ function normalizeStops(data) {
     return Array.isArray(raw) ? raw : [raw];
 }
 
+// Single source of truth for the stop-times payload, shared by the HTTP
+// endpoint and the SSE stream (which only adds `type:'update'`).
 function normalizeStopTimes(data, codStop) {
-    if (!data?.stopTimes) return { codStop, arrivals: [], timestamp: Date.now() };
+    const now = Date.now();
+    if (!data?.stopTimes) {
+        return { codStop, stopName: '', arrivals: [], lineStatuses: {}, serverEpoch: now, timestamp: now };
+    }
 
     const st = data.stopTimes;
-    const now = Date.now();
     const arrivals = [];
 
     const rawTimes = st.times?.Time;
     if (rawTimes) {
         const times = Array.isArray(rawTimes) ? rawTimes : [rawTimes];
         for (const t of times) {
-            const arrivalEpoch = new Date(t.time).getTime();
-            const diffMs = Math.max(0, arrivalEpoch - now);
-            const secondsLeft = Math.round(diffMs / 1000);
-            const minutesLeft = Math.floor(secondsLeft / 60);
-            const secs = secondsLeft % 60;
+            const arrivalDate = new Date(t.time);
+            const arrivalEpoch = arrivalDate.getTime();
+            // NaN guard: an unparseable `time` would sort to the FRONT of the
+            // list and break the countdown. Drop it instead.
+            if (!Number.isFinite(arrivalEpoch)) continue;
+            const secondsLeft = Math.max(0, Math.round((arrivalEpoch - now) / 1000));
+            const codVehicle = (t.codVehicle && String(t.codVehicle).trim()) || null;
+            // CRTM live (SAE/GPS) predictions land on arbitrary seconds; pure
+            // timetable entries sit exactly on the whole minute (:00). So a
+            // vehicle code OR sub-minute precision ⇒ real-time; :00 + no
+            // vehicle ⇒ scheduled. Don't paint scheduled times as "live".
+            const realtime = Boolean(codVehicle) || arrivalDate.getSeconds() !== 0;
             arrivals.push({
                 line: t.line?.shortDescription || '',
                 lineCode: t.line?.codLine || '',
@@ -150,27 +166,34 @@ function normalizeStopTimes(data, codStop) {
                 destination: t.destination || '',
                 direction: t.direction,
                 secondsLeft,
-                minutesLeft,
-                secs,
+                minutesLeft: Math.floor(secondsLeft / 60),
+                secs: secondsLeft % 60,
                 arrivalTime: t.time,
                 arrivalEpoch,
-                codVehicle: t.codVehicle || null,
+                codVehicle,
                 isNight: !!(t.line?.nightService),
+                codIssue: t.codIssue || null,
+                realtime,
                 color: lineColorMap[t.line?.shortDescription] || '#8EBF42',
                 company: t.line?.company || '',
             });
         }
     }
+    arrivals.sort((a, b) => a.secondsLeft - b.secondsLeft);
 
-    // Line statuses (SAE = real-time tracking active)
+    // Line statuses. `hasArrival` lets the UI honestly show lines that CRTM
+    // associates with this stop but reports no time for ("sin tiempo real").
     const statuses = {};
     const rawStatus = st.linesStatus?.LineStatus;
     if (rawStatus) {
         const ls = Array.isArray(rawStatus) ? rawStatus : [rawStatus];
+        const withArrival = new Set(arrivals.map((a) => a.lineCode));
         for (const s of ls) {
-            statuses[s.line?.codLine] = {
+            const code = s.line?.codLine;
+            statuses[code] = {
                 saeActive: s.SAEStatus === true,
                 lineName: s.line?.shortDescription || '',
+                hasArrival: withArrival.has(code),
             };
         }
     }
@@ -178,7 +201,7 @@ function normalizeStopTimes(data, codStop) {
     return {
         codStop,
         stopName: st.stop?.name || '',
-        arrivals: arrivals.sort((a, b) => a.secondsLeft - b.secondsLeft),
+        arrivals,
         lineStatuses: statuses,
         serverTime: st.actualDate || new Date().toISOString(),
         serverEpoch: now,

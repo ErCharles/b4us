@@ -19,6 +19,11 @@ const config = {
     // Negative caching: when upstream errors, suppress retries for this many seconds.
     // Keep short — the goal is "don't hammer", not "stay broken".
     negativeTtl: parseInt(process.env.CACHE_NEGATIVE_TTL || '30', 10),
+    // Live (ETA) endpoints poll every `updateInterval`. Keep fresh just under
+    // that so each poll fetches near-live data, and keep the negative window
+    // short so a 1s CRTM blip doesn't freeze a stop for 30s.
+    liveFreshTtl: parseInt(process.env.CACHE_LIVE_FRESH_TTL || '4', 10),
+    liveNegativeTtl: parseInt(process.env.CACHE_LIVE_NEGATIVE_TTL || '8', 10),
   },
   sse: {
     heartbeatInterval: 15000,
@@ -28,14 +33,25 @@ const config = {
     max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
     timeWindow: '1 minute',
   },
-  // CRTM transport mode codes
-  modes: {
-    METRO: 4,
-    CERCANIAS: 5,
-    EMT: 6,
-    INTERURBANO: 8,
-    METRO_LIGERO: 10,
+  cors: {
+    // Comma-separated allowlist. Includes the GitHub Pages origin because the
+    // frontend can be served from there and call this API cross-origin.
+    // Set ALLOWED_ORIGINS to override; '*' disables the allowlist (dev only).
+    allowedOrigins: (process.env.ALLOWED_ORIGINS ||
+      'https://bus.carloscyberseces.com,https://ercharles.github.io')
+      .split(',').map((s) => s.trim()).filter(Boolean),
   },
+};
+
+// Shared origin check for the CORS plugin (server.js) and the hijacked SSE
+// raw response (routes/sse.js), so both enforce the same allowlist.
+config.isAllowedOrigin = function isAllowedOrigin(origin) {
+  if (!origin) return true; // same-origin requests / curl send no Origin
+  const list = config.cors.allowedOrigins;
+  if (list.includes('*') || list.includes(origin)) return true;
+  if (process.env.NODE_ENV !== 'production' &&
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
+  return false;
 };
 
 module.exports = config;

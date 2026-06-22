@@ -55,17 +55,25 @@ const NEG_TTL = config.cache.negativeTtl;
 const memCache = new Map();
 const MEM_TTL = config.cache.freshTtl * 1000; // ms
 
-async function swr(key, fetchFn) {
+async function swr(key, fetchFn, opts = {}) {
+    // Per-call overrides: live (ETA) keys use a shorter fresh window and a
+    // shorter negative window than stable keys.
+    const fresh = opts.freshTtl ?? FRESH;
+    const negTtl = opts.negativeTtl ?? NEG_TTL;
+
     const r = getRedis();
 
     if (r.status !== 'ready') {
         return swrMemory(key, fetchFn);
     }
 
-    const dataKey = `data:${key}`;
-    const tsKey = `ts:${key}`;
-    const lockKey = `lock:${key}`;
-    const errKey = `err:${key}`;
+    const keys = {
+        dataKey: `data:${key}`,
+        tsKey: `ts:${key}`,
+        lockKey: `lock:${key}`,
+        errKey: `err:${key}`,
+    };
+    const { dataKey, tsKey, lockKey, errKey } = keys;
 
     try {
         const [raw, tsRaw, errRaw] = await r.mget(dataKey, tsKey, errKey);
@@ -73,7 +81,7 @@ async function swr(key, fetchFn) {
         if (raw && tsRaw) {
             const age = (Date.now() - Number(tsRaw)) / 1000;
 
-            if (age < FRESH) {
+            if (age < fresh) {
                 metrics.inc('swrCacheEvents', { state: 'fresh' });
                 return JSON.parse(raw);
             }
@@ -84,7 +92,7 @@ async function swr(key, fetchFn) {
                     // Only revalidate if we don't already know upstream is broken.
                     const acquired = await r.set(lockKey, '1', 'NX', 'PX', LOCK * 1000);
                     if (acquired) {
-                        revalidate(r, key, fetchFn, dataKey, tsKey, lockKey, errKey).catch((err) =>
+                        revalidate(r, key, fetchFn, keys, negTtl).catch((err) =>
                             logger.get().warn(
                                 { kind: 'app', component: 'swr', key, err: err.message },
                                 'Background revalidation failed'
@@ -99,60 +107,32 @@ async function swr(key, fetchFn) {
         // Past STALE OR cold miss. If upstream is known-broken, decide based on what we have:
         if (errRaw) {
             if (raw) {
-                // We have extra-stale data and upstream is broken → serve it as fallback.
                 metrics.inc('swrCacheEvents', { state: 'stale_fallback' });
                 return JSON.parse(raw);
             }
             metrics.inc('swrCacheEvents', { state: 'miss' });
-            const cachedErr = parseCachedError(errRaw);
-            throw cachedErr;
+            throw parseCachedError(errRaw);
         }
 
-        // Acquire lock and fetch
+        // Single-flight: ONLY the lock holder fetches upstream. (The old
+        // `acquired || !raw` let every concurrent cold-miss request through —
+        // a thundering herd against CRTM on expiry/startup.)
         const acquired = await r.set(lockKey, '1', 'NX', 'PX', LOCK * 2 * 1000);
-        if (acquired || !raw) {
-            try {
-                const data = await fetchFn();
-                metrics.inc('swrCacheEvents', { state: 'miss' });
-                await persist(r, dataKey, tsKey, data);
-                await r.del(lockKey, errKey);
-                return data;
-            } catch (err) {
-                await r.del(lockKey);
-                // Cache the error briefly so we don't hammer upstream
-                await r.set(errKey, JSON.stringify({ message: err.message, code: err.code, statusCode: err.statusCode }), 'EX', NEG_TTL);
-                if (raw) {
-                    // Stale-extended fallback
-                    metrics.inc('swrCacheEvents', { state: 'stale_fallback' });
-                    logger.get().warn(
-                        { kind: 'app', component: 'swr', key, err: err.message },
-                        'Returning stale data after fetch failure'
-                    );
-                    return JSON.parse(raw);
-                }
-                throw err;
-            }
-        }
-
-        // Someone else owns the lock — wait briefly and retry from cache
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        const retryRaw = await r.get(dataKey);
-        if (retryRaw) {
-            metrics.inc('swrCacheEvents', { state: 'stale' });
-            return JSON.parse(retryRaw);
-        }
-
-        // Last resort: fetch ourselves
-        try {
-            const data = await fetchFn();
+        if (acquired) {
             metrics.inc('swrCacheEvents', { state: 'miss' });
-            await persist(r, dataKey, tsKey, data);
-            await r.del(errKey);
-            return data;
-        } catch (err) {
-            await r.set(errKey, JSON.stringify({ message: err.message, code: err.code, statusCode: err.statusCode }), 'EX', NEG_TTL);
-            throw err;
+            return await fetchAndStore(r, keys, fetchFn, negTtl, raw);
         }
+
+        // Not the holder — wait briefly for it to populate the cache, then read.
+        const populated = await waitForData(r, dataKey, LOCK);
+        if (populated) {
+            metrics.inc('swrCacheEvents', { state: 'stale' });
+            return JSON.parse(populated);
+        }
+
+        // Holder failed or is too slow — fetch ourselves as a last resort.
+        metrics.inc('swrCacheEvents', { state: 'miss' });
+        return await fetchAndStore(r, keys, fetchFn, negTtl, raw);
     } catch (err) {
         if (err && err.code === 'CIRCUIT_OPEN') throw err;
         if (err && err.upstream) throw err;
@@ -164,6 +144,42 @@ async function swr(key, fetchFn) {
         metrics.inc('swrCacheEvents', { state: 'memory' });
         return swrMemory(key, fetchFn);
     }
+}
+
+// Single fetch+persist path shared by the cold-miss branches. On failure it
+// caches the error (negative caching) and serves extra-stale `staleRaw` if
+// we have it, else rethrows.
+async function fetchAndStore(r, keys, fetchFn, negTtl, staleRaw) {
+    const { dataKey, tsKey, lockKey, errKey } = keys;
+    try {
+        const data = await fetchFn();
+        await persist(r, dataKey, tsKey, data);
+        await r.del(lockKey, errKey);
+        return data;
+    } catch (err) {
+        await r.del(lockKey);
+        await r.set(errKey, JSON.stringify({ message: err.message, code: err.code, statusCode: err.statusCode }), 'EX', negTtl);
+        if (staleRaw) {
+            metrics.inc('swrCacheEvents', { state: 'stale_fallback' });
+            logger.get().warn(
+                { kind: 'app', component: 'swr', err: err.message },
+                'Returning stale data after fetch failure'
+            );
+            return JSON.parse(staleRaw);
+        }
+        throw err;
+    }
+}
+
+// Poll the data key while another request holds the single-flight lock.
+async function waitForData(r, dataKey, lockSecs) {
+    const deadline = Date.now() + lockSecs * 1000;
+    while (Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 60));
+        const v = await r.get(dataKey);
+        if (v) return v;
+    }
+    return null;
 }
 
 async function swrMemory(key, fetchFn) {
@@ -180,7 +196,8 @@ async function swrMemory(key, fetchFn) {
     return data;
 }
 
-async function revalidate(r, key, fetchFn, dataKey, tsKey, lockKey, errKey) {
+async function revalidate(r, key, fetchFn, keys, negTtl) {
+    const { dataKey, tsKey, lockKey, errKey } = keys;
     try {
         const data = await fetchFn();
         await persist(r, dataKey, tsKey, data);
@@ -190,7 +207,7 @@ async function revalidate(r, key, fetchFn, dataKey, tsKey, lockKey, errKey) {
             errKey,
             JSON.stringify({ message: err.message, code: err.code, statusCode: err.statusCode }),
             'EX',
-            NEG_TTL
+            negTtl
         );
         throw err;
     } finally {
@@ -222,11 +239,6 @@ function parseCachedError(raw) {
     }
 }
 
-async function invalidate(key) {
-    const r = getRedis();
-    await r.del(`data:${key}`, `ts:${key}`, `lock:${key}`, `err:${key}`);
-}
-
 async function disconnect() {
     if (redis) {
         await redis.quit();
@@ -234,4 +246,4 @@ async function disconnect() {
     }
 }
 
-module.exports = { swr, invalidate, getRedis, disconnect };
+module.exports = { swr, getRedis, disconnect };

@@ -30,3 +30,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+monitoring/metrics-token
+*.key
+*.crt
+.duckdns-token
+.ts-authkey

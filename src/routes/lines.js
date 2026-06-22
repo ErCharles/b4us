@@ -13,7 +13,6 @@ const codLineSchema = {
 };
 
 const STABLE_CACHE = 'public, max-age=600, stale-while-revalidate=86400, stale-if-error=600';
-const VOLATILE_CACHE = 'no-store';
 
 async function linesRoutes(fastify) {
     // Get all lines by mode (default: interurbano = 8)
@@ -79,7 +78,7 @@ async function linesRoutes(fastify) {
         const data = await swr(key, () =>
             crtm.getLineLocation(mode, itinerary, codLine, stop, direction)
         );
-        reply.header('Cache-Control', VOLATILE_CACHE);
+        reply.header('Cache-Control', 'no-store');
         return data;
     });
 
@@ -101,17 +100,6 @@ async function linesRoutes(fastify) {
         const key = `lines:incidents:${codLine}`;
         const data = await swr(key, () => crtm.getIncidents(mode, codLine));
         reply.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=600');
-        return data;
-    });
-
-    // Get line time planning
-    fastify.get('/api/lines/:codLine/timeplanning', {
-        schema: { params: codLineSchema },
-    }, async (req, reply) => {
-        const { codLine } = req.params;
-        const key = `lines:tp:${codLine}`;
-        const data = await swr(key, () => crtm.getLinesTimeplanning(codLine));
-        reply.header('Cache-Control', STABLE_CACHE);
         return data;
     });
 }

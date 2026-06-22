@@ -60,7 +60,12 @@ class CircuitBreaker {
         }
     }
 
-    async execute(fn) {
+    // `isFailure(err)` decides whether a thrown error counts against the
+    // breaker. Default: everything counts. Callers wrapping an upstream pass
+    // a classifier so that *client/API* errors (e.g. a non-existent stop)
+    // don't open the circuit — the upstream answered, it just said "no".
+    // Such errors call recordSuccess() (connectivity proven) before rethrow.
+    async execute(fn, isFailure = () => true) {
         if (!this.canExecute()) {
             const err = new Error(`Circuit breaker '${this.name}' is OPEN`);
             err.code = 'CIRCUIT_OPEN';
@@ -73,7 +78,8 @@ class CircuitBreaker {
             this.recordSuccess();
             return result;
         } catch (err) {
-            this.recordFailure();
+            if (isFailure(err)) this.recordFailure();
+            else this.recordSuccess();
             throw err;
         } finally {
             if (wasHalfOpen) this.halfOpenInflight -= 1;
@@ -90,7 +96,7 @@ class CircuitBreaker {
     }
 
     _reportState() {
-        metrics.set('crtmCircuitState', this.state);
+        metrics.set('crtmCircuitState', this.state, { name: this.name });
     }
 }
 

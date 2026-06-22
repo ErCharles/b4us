@@ -49,7 +49,8 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
     rel="stylesheet" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <!-- Leaflet (CSS + JS) is lazy-loaded by app.js only when the map is
+       actually needed (desktop / map open), so mobile never pays for it. -->
   <link rel="stylesheet" href="index.css" />
 </head>
 
@@ -183,8 +184,9 @@
         </div>
 
         <div id="eta-empty" class="empty-msg hidden">
-          <p>🌙 Sin próximas llegadas</p>
-          <p class="hint">El servicio puede haber terminado</p>
+          <p id="eta-empty-title">Sin próximas llegadas</p>
+          <p class="hint" id="eta-empty-hint">CRTM no está devolviendo tiempos para esta parada ahora mismo</p>
+          <div id="eta-empty-lines" class="eta-empty-lines"></div>
         </div>
 
         <div class="eta-footer">
@@ -246,7 +248,6 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="app.js"></script>
 </body>
 

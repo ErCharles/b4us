@@ -63,16 +63,18 @@ test('Invalid JSON is reported as upstream error', async () => {
     );
 });
 
-test('errorCode in body is reported', async () => {
+test('application-level errorCode is returned as data, NOT thrown (bad stop must not trip the breaker)', async () => {
     pool.intercept({ path: /\/widgets\/api\/GetStops\.php\?codStop=8_00002.*/ })
         .reply(200, JSON.stringify({ errorCode: '42', errorMessage: 'kaboom' }), {
             headers: { 'content-type': 'application/json' },
         });
 
-    await assert.rejects(
-        crtm.getStopInfo('8_00002'),
-        /CRTM API Error: kaboom/
-    );
+    // The upstream answered fine, it just has nothing for this stop. We return
+    // the body (normalizers yield empty arrivals) instead of throwing an
+    // upstream error — so a typo/bot can't open the circuit or poison the
+    // negative cache.
+    const data = await crtm.getStopInfo('8_00002');
+    assert.equal(data.errorCode, '42');
 });
 
 test('breaker exposes a snapshot', () => {

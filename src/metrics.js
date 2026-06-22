@@ -30,27 +30,15 @@ function init(promClient) {
         }),
         crtmCircuitState: new client.Gauge({
             name: 'crtm_circuit_state',
-            help: 'CRTM circuit-breaker state (0=closed,1=half-open,2=open)',
+            help: 'CRTM circuit-breaker state per endpoint (0=closed,1=half-open,2=open)',
+            labelNames: ['name'],
         }),
         sseConnections: new client.Gauge({
             name: 'sse_connections_active',
             help: 'Active Server-Sent Events connections',
-            labelNames: ['stop'],
-        }),
-        sseConnectionsTotal: new client.Counter({
-            name: 'sse_connections_opened_total',
-            help: 'Total number of SSE connections opened since start',
         }),
     };
     return metrics;
-}
-
-function get() {
-    return metrics; // may be null until init() is called
-}
-
-function getClient() {
-    return client;
 }
 
 // Safe wrappers that no-op if metrics aren't initialised yet (eg. in tests).
@@ -72,4 +60,4 @@ function observe(name, value, labels) {
     else metrics[name].observe(value);
 }
 
-module.exports = { init, get, getClient, inc, set, observe };
+module.exports = { init, inc, set, observe };

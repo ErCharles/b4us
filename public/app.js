@@ -7,8 +7,8 @@
 // Deploy-aware bases.
 //
 // The frontend can be served from two places:
-//   1. bus.carloscyberseces.com         (full backend on this server)
-//   2. <user>.github.io/<repo>/         (GitHub Pages — frontend only,
+//   1. b4us.pigeon-cobia.ts.net                  (full backend on this host, via Caddy)
+//   2. ercharles.github.io/b4us/         (GitHub Pages — frontend only,
 //                                        backend lives at #1 via CORS)
 //
 // API_BASE is empty when frontend and backend share the origin (case 1).
@@ -16,7 +16,7 @@
 // SSE land on the right server. BASE_PATH covers GH Pages' subpath so
 // SPA routes like /stop/:cod and asset URLs resolve correctly.
 const _isPages = location.hostname.endsWith('.github.io');
-const API_BASE = _isPages ? 'https://bus.carloscyberseces.com' : '';
+const API_BASE = _isPages ? 'https://b4us.pigeon-cobia.ts.net' : '';
 const BASE_PATH = (() => {
     if (!_isPages) return '/';
     const seg = location.pathname.split('/').filter(Boolean)[0] || '';
@@ -129,38 +129,89 @@ const MADRID_BBOX = { minLat: 40.20, maxLat: 40.60, minLng: -4.00, maxLng: -3.50
 let panSearchTimer = null;
 let suppressPanSearch = false; // set true when we move the map programmatically
 
-if (isDesktop) {
-    map = L.map('map', { center: MADRID_CENTER, zoom: 12, zoomControl: false });
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
-    // Pick the tile theme based on the stored preference / OS preference.
-    const wantLight = (() => {
-        const t = localStorage.getItem('bus_theme_v1') || 'auto';
-        if (t === 'light') return true;
-        if (t === 'dark') return false;
-        return matchMedia('(prefers-color-scheme: light)').matches;
-    })();
-    const tileUrl = wantLight
-        ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-        : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-    const tileLayer = L.tileLayer(tileUrl, {
-        attribution: '&copy; CARTO &copy; OSM',
-        maxZoom: 19, subdomains: 'abcd',
-    }).addTo(map);
-    // Expose for theme switching + ad-hoc inspection (devtools / tests).
-    window.__bus = { map, tileLayer, get state() { return state; }, searchAtMapCenter, renderViewport };
+// --- Lazy-loaded Leaflet ---
+// Leaflet's CSS + JS (~150KB) only matter when there's a map to show.
+// Inject them on first use and cache the load promise so we never fetch
+// twice. `ensureMap()` resolves once `map` (and the global `L`) are ready.
+const LEAFLET_VER = '1.9.4';
+let _leafletPromise = null;
+function loadLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (_leafletPromise) return _leafletPromise;
+    _leafletPromise = new Promise((resolve, reject) => {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = `https://unpkg.com/leaflet@${LEAFLET_VER}/dist/leaflet.css`;
+        link.crossOrigin = '';
+        document.head.appendChild(link);
 
-    // Re-render markers in viewport on every move/zoom (debounced so dragging
-    // is smooth). The full Madrid dataset (~11k stops) lives in `state.allStops`
-    // — we render only the subset visible at the current zoom level.
-    map.on('moveend', () => {
-        if (suppressPanSearch) { suppressPanSearch = false; return; }
-        clearTimeout(panSearchTimer);
-        panSearchTimer = setTimeout(() => renderViewport(), 200);
+        const script = document.createElement('script');
+        script.src = `https://unpkg.com/leaflet@${LEAFLET_VER}/dist/leaflet.js`;
+        script.crossOrigin = '';
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => { _leafletPromise = null; reject(new Error('Leaflet failed to load')); };
+        document.head.appendChild(script);
     });
-    map.on('zoomend', () => {
-        clearTimeout(panSearchTimer);
-        panSearchTimer = setTimeout(() => renderViewport(), 100);
+    return _leafletPromise;
+}
+
+let _mapPromise = null;
+// Resolves once the Leaflet map is initialized. Safe to call repeatedly.
+function ensureMap() {
+    if (!isDesktop) return Promise.resolve(null);
+    if (map) return Promise.resolve(map);
+    if (_mapPromise) return _mapPromise;
+    _mapPromise = loadLeaflet().then(() => {
+        if (map) return map; // raced
+        map = L.map('map', { center: MADRID_CENTER, zoom: 12, zoomControl: false });
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+        // Pick the tile theme based on the stored preference / OS preference.
+        const wantLight = (() => {
+            const t = localStorage.getItem('bus_theme_v1') || 'auto';
+            if (t === 'light') return true;
+            if (t === 'dark') return false;
+            return matchMedia('(prefers-color-scheme: light)').matches;
+        })();
+        const tileUrl = wantLight
+            ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+        const tileLayer = L.tileLayer(tileUrl, {
+            attribution: '&copy; CARTO &copy; OSM',
+            maxZoom: 19, subdomains: 'abcd',
+        }).addTo(map);
+        // Expose for theme switching + ad-hoc inspection (devtools / tests).
+        window.__bus = { map, tileLayer, get state() { return state; }, searchAtMapCenter, renderViewport };
+
+        // Re-render markers in viewport on every move/zoom (debounced so dragging
+        // is smooth). The full Madrid dataset (~11k stops) lives in `state.allStops`
+        // — we render only the subset visible at the current zoom level.
+        map.on('moveend', () => {
+            if (suppressPanSearch) { suppressPanSearch = false; return; }
+            clearTimeout(panSearchTimer);
+            panSearchTimer = setTimeout(() => renderViewport(), 200);
+        });
+        map.on('zoomend', () => {
+            clearTimeout(panSearchTimer);
+            panSearchTimer = setTimeout(() => renderViewport(), 100);
+        });
+
+        // Popup "Ver tiempos" buttons are wired via delegation on popupopen
+        // (no inline onclick / window._sel).
+        map.on('popupopen', (e) => {
+            const root = e.popup.getElement();
+            if (!root) return;
+            const btn = root.querySelector('.popup-select');
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                map.closePopup();
+                selectStop(btn.dataset.cod, btn.dataset.name, +btn.dataset.lat || null, +btn.dataset.lng || null);
+            }, { once: true });
+        });
+
+        return map;
     });
+    return _mapPromise;
 }
 
 function isInMadrid(lat, lng) {
@@ -195,7 +246,8 @@ searchInput.addEventListener('input', () => {
     searchClear.classList.toggle('hidden', !q);
     clearTimeout(searchTimer);
     if (q.length < 2) { hideResults(); return; }
-    searchTimer = setTimeout(() => doSearch(q), 300);
+    // Local filtering is cheap, so a minimal debounce just coalesces fast typing.
+    searchTimer = setTimeout(() => doSearch(q), 120);
 });
 
 searchClear.addEventListener('click', () => {
@@ -205,21 +257,47 @@ searchClear.addEventListener('click', () => {
     searchInput.focus();
 });
 
+// Client-side search over the bundled Madrid dataset (~11k stops). Filtering
+// 11k tuples by substring is sub-millisecond, so there's no reason to hit
+// /api/stops/search on every keystroke — it adds latency and load and depends
+// on CRTM being up. The API is reserved for enrichment when a stop is selected
+// (selectStop -> /times). The dataset is loaded on-demand the first time the
+// user searches if it isn't already in memory (e.g. on mobile).
+const SEARCH_CAP = 30;
 async function doSearch(q) {
-    try {
-        const r = await fetch(`${API_BASE}/api/stops/search?q=${encodeURIComponent(q)}`);
-        if (!r.ok) {
-            const body = await r.json().catch(() => ({}));
-            if (r.status === 502 || r.status === 503) showUpstreamBanner();
-            showResultsError(body.error || 'CRTM no responde, intenta en unos segundos');
-            return;
-        }
-        const d = await r.json();
-        showResults(d.stops || []);
-    } catch (e) {
-        console.error('Search:', e);
-        showResultsError('Sin conexión');
+    if (!state.allStops || !state.allStops.length) {
+        await loadStops();
+        // The query may have changed while loading; re-read the live input.
+        const cur = searchInput.value.trim();
+        if (cur.length < 2) return;
+        q = cur;
     }
+    if (!state.allStops.length) {
+        showResultsError('No se pudo cargar el listado de paradas');
+        return;
+    }
+
+    const needle = q.toLowerCase();
+    const matches = [];
+    for (const s of state.allStops) {
+        // tuple: [cod, short, mode, name, lat, lng]
+        const cod = String(s[0] || '');
+        const short = String(s[1] || '');
+        const name = String(s[3] || '');
+        if (name.toLowerCase().includes(needle)
+            || cod.toLowerCase().includes(needle)
+            || short.toLowerCase().includes(needle)) {
+            matches.push({
+                codStop: cod,
+                shortCodStop: short,
+                codMode: s[2],
+                name,
+                coordinates: { latitude: s[4], longitude: s[5] },
+            });
+            if (matches.length >= SEARCH_CAP) break;
+        }
+    }
+    showResults(matches);
 }
 
 function showResultsError(msg) {
@@ -251,10 +329,12 @@ function showResults(stops) {
     favSection.classList.add('hidden');
     bindStopClicks(searchResults);
 
-    clearMarkers();
     if (isDesktop) {
-        stops.forEach(s => { if (s.coordinates) addMarker(s); });
-        fitMarkers();
+        ensureMap().then(() => {
+            clearMarkers();
+            stops.forEach(s => { if (s.coordinates) addMarker(s); });
+            fitMarkers();
+        });
     }
 }
 
@@ -298,9 +378,11 @@ function selectStop(codStop, name, lat, lng, opts = {}) {
     }
 
     if (isDesktop && lat && lng && !isNaN(lat)) {
-        suppressPanSearch = true;
-        map.flyTo([lat, lng], 16, { duration: 0.6 });
-        highlightMarker(codStop);
+        ensureMap().then(() => {
+            suppressPanSearch = true;
+            map.flyTo([lat, lng], 16, { duration: 0.6 });
+            highlightMarker(codStop);
+        });
     }
 
     fetch(`${API_BASE}/api/stops/${encodeURIComponent(codStop)}/times`)
@@ -317,8 +399,21 @@ function selectStop(codStop, name, lat, lng, opts = {}) {
             throw r;
         })
         .then(d => {
-            if (state.currentStop?.codStop === codStop && !state.eventSource) {
+            // Render the first paint as soon as /times resolves, even if the
+            // SSE has already opened. Some proxies (e.g. cloudflared) buffer
+            // small SSE responses, so onopen can fire while no `update` event
+            // has actually reached the browser — relying on SSE alone leaves
+            // the skeleton hanging. SSE updates will overwrite this shortly.
+            if (state.currentStop?.codStop === codStop) {
                 if (d.lineStatuses) state.lineStatuses = d.lineStatuses;
+                // Enrich the title with the canonical CRTM stop name when the
+                // local dataset only had a code/short name. No extra request:
+                // it comes back on the /times payload we already fetched.
+                if (d.stopName && d.stopName !== state.currentStop.name) {
+                    state.currentStop.name = d.stopName;
+                    etaStopName.textContent = d.stopName;
+                    document.title = `${d.stopName} — B4us`;
+                }
                 renderArrivals(d);
             }
         })
@@ -431,6 +526,14 @@ function setConn(s) {
 }
 
 // --- Render Arrivals ---
+// Honest rendering + in-place diffing:
+//  - Group by lineCode:direction (so Metro "1" and an urbano "1" never collapse).
+//  - Each arrival shows a live ("en vivo", green dot) or schedule ("horario")
+//    indicator strictly from a.realtime — we never imply GPS for a timetable row.
+//  - lineStatuses entries with hasArrival===false render a discreet "sin tiempo
+//    real" chip instead of vanishing.
+//  - Rows are reconciled in place (keyed by data-key) so the per-second
+//    countdown, animations and aria-live don't reset on every SSE frame.
 function renderArrivals(data) {
     const arr = data.arrivals || [];
     if (data.serverEpoch) {
@@ -441,7 +544,9 @@ function renderArrivals(data) {
     }
 
     if (!arr.length) {
+        // Still surface no-time lines below the empty hint via the empty state.
         arrivalsList.innerHTML = '';
+        renderEmptyState(data);
         etaEmpty.classList.remove('hidden');
         etaUpdated.textContent = '⚡ ' + fmtTime(new Date());
         return;
@@ -457,64 +562,198 @@ function renderArrivals(data) {
         state.lastEpochs[key] = a.arrivalEpoch;
     }
 
+    // Group by codLine + direction (NOT shortDescription / a.line) so different
+    // modes that share a public number stay distinct at interchanges.
     const groups = new Map();
     for (const a of arr) {
-        const gKey = `${a.line}:${a.direction}`;
+        const gKey = `${a.lineCode}:${a.direction}`;
         if (!groups.has(gKey)) groups.set(gKey, []);
         const g = groups.get(gKey);
         if (g.length < 2) g.push(a);
     }
 
-    const sorted = [...groups.values()].sort((a, b) => a[0].arrivalEpoch - b[0].arrivalEpoch);
+    const sorted = [...groups.entries()].sort((a, b) => a[1][0].arrivalEpoch - b[1][0].arrivalEpoch);
 
-    let html = '';
-    let idx = 0;
-    for (const group of sorted) {
-        const first = group[0];
-        const second = group[1];
-        const c = lineColor(first.line);
-        const sae = state.lineStatuses[first.lineCode];
-        const saeTag = sae?.saeActive
-            ? '<span class="sae-badge live">● GPS</span>'
-            : '<span class="sae-badge sched">◦ Horario</span>';
-
-        html += `
-    <div class="arrival-card" style="animation-delay:${idx * 0.04}s">
-      <div class="line-badge" style="background:${c}" aria-hidden="true">${esc(first.line)}</div>
-      <div class="arr-info">
-        <div class="arr-dest">${esc(first.destination || 'Destino desconocido')}</div>
-        <div class="arr-meta">
-          ${first.isNight ? '<span class="arr-night">🌙 Búho</span>' : ''}
-          ${saeTag}
-        </div>
-      </div>
-      <div class="arr-eta">
-        <div class="countdown" data-epoch="${first.arrivalEpoch}" data-line="${esc(first.line)}" aria-label="Llega en">--:--</div>
-        <div class="eta-sub">min:seg</div>
-        <div class="eta-abs">${esc(fmtTime(new Date(first.arrivalTime)))}</div>
-      </div>
-    </div>`;
-
-        if (second) {
-            html += `
-    <div class="arrival-card next-bus" style="animation-delay:${(idx + 0.5) * 0.04}s">
-      <div class="line-badge-sm" style="background:${c}" aria-hidden="true">${esc(second.line)}</div>
-      <div class="arr-info">
-        <div class="arr-dest next-label">Siguiente →</div>
-      </div>
-      <div class="arr-eta">
-        <div class="countdown" data-epoch="${second.arrivalEpoch}" data-line="${esc(second.line)}" aria-label="Siguiente">--:--</div>
-        <div class="eta-sub">min:seg</div>
-        <div class="eta-abs">${esc(fmtTime(new Date(second.arrivalTime)))}</div>
-      </div>
-    </div>`;
-        }
-        idx++;
+    // Build the desired, ordered list of rows.
+    const items = [];
+    for (const [gKey, group] of sorted) {
+        items.push({ key: gKey, type: 'arrival', first: group[0], second: group[1] });
     }
 
-    arrivalsList.innerHTML = html;
+    // Lines that serve this stop but have no real-time arrival right now.
+    // Prefer the explicit contract flag (hasArrival===false); fall back to "not
+    // present in arrivals" for older payloads.
+    const seenLines = new Set(arr.map(a => a.lineCode));
+    for (const [code, s] of Object.entries(state.lineStatuses || {})) {
+        const hasArrival = s && typeof s.hasArrival === 'boolean' ? s.hasArrival : seenLines.has(code);
+        if (hasArrival) continue;
+        const name = (s && s.lineName) || code.split('__')[1] || '?';
+        items.push({ key: `notime:${code}`, type: 'notime', code, name });
+    }
+
+    reconcileArrivals(items);
     etaUpdated.textContent = '⚡ ' + fmtTime(new Date());
     startCountdown();
+}
+
+// Reconcile the arrivals list against `items` (ordered) without blowing away
+// the DOM each frame: update existing rows, create missing ones, drop stale
+// ones, then reorder to match.
+function reconcileArrivals(items) {
+    const existing = new Map();
+    for (const el of Array.from(arrivalsList.children)) {
+        const k = el.dataset.key;
+        if (k) existing.set(k, el); else el.remove();
+    }
+
+    const wanted = new Set(items.map(i => i.key));
+    for (const [k, el] of existing) {
+        if (!wanted.has(k)) { el.remove(); existing.delete(k); }
+    }
+
+    let prevEl = null;
+    items.forEach((item, idx) => {
+        let el = existing.get(item.key);
+        if (el) {
+            (item.type === 'arrival' ? updateArrivalCard : updateNotimeRow)(el, item);
+        } else {
+            el = (item.type === 'arrival' ? buildArrivalCard : buildNotimeRow)(item, idx);
+            existing.set(item.key, el);
+        }
+        // Place in correct order.
+        const ref = prevEl ? prevEl.nextSibling : arrivalsList.firstChild;
+        if (el !== ref) arrivalsList.insertBefore(el, ref);
+        prevEl = el;
+    });
+}
+
+// "en vivo" (live GPS) vs "horario" (timetable) — driven solely by a.realtime.
+function sourceBadge(a) {
+    if (a.inferred) {
+        return '<span class="arr-source live" title="Estimado por posición GPS del bus">≈ estimado</span>';
+    }
+    return a.realtime === true
+        ? '<span class="arr-source live" title="Predicción GPS en vivo">en vivo</span>'
+        : '<span class="arr-source sched" title="Hora de horario — no en vivo">horario</span>';
+}
+
+function buildArrivalCard(item, idx) {
+    const card = document.createElement('div');
+    card.className = 'arrival-card';
+    card.dataset.key = item.key;
+    card.style.animationDelay = `${idx * 0.04}s`;
+    card.innerHTML = `
+      <div class="line-badge" aria-hidden="true"></div>
+      <div class="arr-info">
+        <div class="arr-dest"></div>
+        <div class="arr-meta"></div>
+      </div>
+      <div class="arr-eta">
+        <div class="countdown" aria-label="Llega en">--:--</div>
+        <div class="eta-sub">min:seg</div>
+        <div class="eta-abs"></div>
+      </div>
+      <div class="next-wrap"></div>`;
+    updateArrivalCard(card, item);
+    return card;
+}
+
+function updateArrivalCard(card, item) {
+    const { first, second } = item;
+    const c = lineColor(first.line);
+
+    const badge = card.querySelector('.line-badge');
+    badge.style.background = c;
+    if (badge.textContent !== String(first.line)) badge.textContent = first.line;
+
+    const dest = card.querySelector('.arr-dest');
+    const destTxt = first.destination || 'Destino desconocido';
+    if (dest.textContent !== destTxt) dest.textContent = destTxt;
+
+    const meta = card.querySelector('.arr-meta');
+    const metaHtml = `${first.isNight ? '<span class="arr-night">🌙 Búho</span>' : ''}${sourceBadge(first)}`;
+    if (meta.innerHTML !== metaHtml) meta.innerHTML = metaHtml;
+
+    const cd = card.querySelector('.arr-eta > .countdown');
+    cd.dataset.epoch = first.arrivalEpoch;
+    cd.dataset.line = first.line;
+    const abs = card.querySelector('.arr-eta > .eta-abs');
+    abs.textContent = fmtTime(new Date(first.arrivalTime));
+
+    // Secondary "Siguiente" row, kept inside the same keyed card.
+    const wrap = card.querySelector('.next-wrap');
+    if (second) {
+        wrap.innerHTML = `
+          <div class="arrival-card next-bus">
+            <div class="line-badge-sm" style="background:${c}" aria-hidden="true">${esc(second.line)}</div>
+            <div class="arr-info"><div class="arr-dest next-label">Siguiente →</div></div>
+            <div class="arr-eta">
+              <div class="countdown" data-epoch="${second.arrivalEpoch}" data-line="${esc(second.line)}" aria-label="Siguiente">--:--</div>
+              <div class="eta-sub">min:seg</div>
+              <div class="eta-abs">${esc(fmtTime(new Date(second.arrivalTime)))}</div>
+            </div>
+          </div>`;
+    } else if (wrap.firstChild) {
+        wrap.innerHTML = '';
+    }
+}
+
+function buildNotimeRow(item) {
+    const row = document.createElement('div');
+    row.className = 'line-notime';
+    row.dataset.key = item.key;
+    row.innerHTML = `
+      <div class="line-badge-sm" aria-hidden="true"></div>
+      <div class="line-notime-text"></div>`;
+    updateNotimeRow(row, item);
+    return row;
+}
+
+function updateNotimeRow(row, item) {
+    const badge = row.querySelector('.line-badge-sm');
+    badge.style.background = lineColor(item.name);
+    if (badge.textContent !== String(item.name)) badge.textContent = item.name;
+    const txt = row.querySelector('.line-notime-text');
+    const t = `Línea ${item.name} — sin tiempo real (consultar horario)`;
+    if (txt.textContent !== t) { txt.textContent = t; row.title = item.code; }
+}
+
+// Empty state: don't claim "service has ended" — CRTM regularly returns no
+// times for stops whose lines exist but have no real-time data exposed
+// (e.g. mode 9 — urbanos de municipios — never appears in `times.Time`
+// even with SAEStatus=true). Surface the known lines so the user can see
+// which routes pass by, with a clear hint about what's missing.
+function renderEmptyState(data) {
+    const titleEl = document.getElementById('eta-empty-title');
+    const hintEl = document.getElementById('eta-empty-hint');
+    const linesEl = document.getElementById('eta-empty-lines');
+    if (!titleEl || !hintEl || !linesEl) return;
+
+    const statuses = (data && data.lineStatuses) || state.lineStatuses || {};
+    const entries = Object.entries(statuses);
+    const hour = new Date().getHours();
+    const isLateNight = hour >= 1 && hour < 5;
+
+    if (entries.length) {
+        titleEl.textContent = 'Sin llegadas en vivo';
+        hintEl.textContent = isLateNight
+            ? 'CRTM no devuelve tiempos a esta hora. Líneas que pasan por esta parada:'
+            : 'CRTM no devuelve tiempos para esta parada ahora. Líneas conocidas:';
+        linesEl.innerHTML = entries.map(([codLine, s]) => {
+            const name = s?.lineName || codLine.split('__')[1] || '?';
+            const live = s?.saeActive;
+            return `<span class="empty-line-badge" style="background:${lineColor(name)}"
+                          title="${esc(codLine)}${live ? ' · GPS activo en CRTM' : ' · sólo horario'}">
+                      ${esc(name)}${live ? '' : ' <small>◦</small>'}
+                    </span>`;
+        }).join('');
+    } else {
+        titleEl.textContent = 'Sin llegadas en vivo';
+        hintEl.textContent = isLateNight
+            ? 'A esta hora muchas líneas no tienen tiempo real disponible'
+            : 'CRTM no está devolviendo tiempos para esta parada ahora mismo';
+        linesEl.innerHTML = '';
+    }
 }
 
 function startCountdown() {
@@ -735,6 +974,7 @@ async function nearby() {
         const pos = await new Promise((ok, fail) => navigator.geolocation.getCurrentPosition(ok, fail, { enableHighAccuracy: true, timeout: 10000 }));
         const { latitude: lat, longitude: lng } = pos.coords;
         if (isDesktop) {
+            await ensureMap();
             suppressPanSearch = true;
             map.flyTo([lat, lng], 15, { duration: 0.8 });
             L.circleMarker([lat, lng], { radius: 8, fillColor: '#3b82f6', fillOpacity: 0.8, color: '#fff', weight: 2 })
@@ -810,7 +1050,7 @@ function addMarker(stop) {
       <strong style="font-size:13px">${esc(name)}</strong>
       <span class="mode-pill ${info.cls}">${esc(info.label)}</span><br>
       <small style="opacity:0.6">${esc(cod)}</small><br>
-      <button onclick="window._sel('${esc(cod)}','${esc(name).replace(/'/g, "\\'")}',${lat},${lng})"
+      <button class="popup-select" data-cod="${esc(cod)}" data-name="${esc(name)}" data-lat="${lat}" data-lng="${lng}"
         style="margin-top:6px;padding:5px 12px;border:none;border-radius:8px;background:#8EBF42;color:#fff;cursor:pointer;font-weight:600;font-size:12px">
         Ver tiempos
       </button>
@@ -875,8 +1115,6 @@ function renderViewport() {
     state.markers = Array.from(state.markersByCode.values());
 }
 
-window._sel = (c, n, la, ln) => { if (isDesktop) map.closePopup(); selectStop(c, n, la, ln); };
-
 function highlightMarker(cod) {
     if (!isDesktop) return;
     state.markers.forEach(m => {
@@ -935,7 +1173,7 @@ btnNearby.addEventListener('click', nearby);
 btnExpandMap.addEventListener('click', () => {
     state.mapExpanded = !state.mapExpanded;
     mapContainer.classList.toggle('expanded', state.mapExpanded);
-    setTimeout(() => map.invalidateSize(), 350);
+    ensureMap().then(() => setTimeout(() => map.invalidateSize(), 350));
 });
 incidentClose.addEventListener('click', () => incidentBanner.classList.add('hidden'));
 btnPrefs.addEventListener('click', openPrefs);
@@ -948,7 +1186,7 @@ if (btnMenu) {
         if (!isDesktop) return;
         state.mapExpanded = !state.mapExpanded;
         mapContainer.classList.toggle('expanded', state.mapExpanded);
-        setTimeout(() => map.invalidateSize(), 350);
+        ensureMap().then(() => setTimeout(() => map.invalidateSize(), 350));
     });
 }
 
@@ -1080,6 +1318,26 @@ function saveCachedStops(stops) {
     } catch {/*storage full / private mode*/}
 }
 
+// --- Load the full Madrid GTFS dataset on-demand ---
+// d.stops is array of [cod, short, mode, name, lat, lng] (~11k entries).
+// Both the desktop map and the client-side search consume it. Cached as a
+// promise so concurrent callers (loadInitial + first search keystroke) share
+// a single fetch. The SW serves it stale-while-revalidate, so this is cheap.
+let _stopsPromise = null;
+function loadStops() {
+    if (state.allStops && state.allStops.length) return Promise.resolve(state.allStops);
+    if (_stopsPromise) return _stopsPromise;
+    _stopsPromise = fetch(`${BASE_PATH}madrid-stops.json`)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('madrid-stops.json ' + r.status)))
+        .then(d => {
+            state.allStops = d.stops || [];
+            console.info(`Loaded ${state.allStops.length} Madrid stops`);
+            return state.allStops;
+        })
+        .catch(e => { _stopsPromise = null; console.warn('madrid-stops.json:', e.message); return []; });
+    return _stopsPromise;
+}
+
 // --- Load initial stops (desktop map only) ---
 // Loads the full Madrid GTFS dataset (interurbano + EMT + metro + cercanías
 // + ML). Markers get filtered by viewport on every map move/zoom — this is
@@ -1093,16 +1351,11 @@ async function loadInitial() {
         .catch(() => {});
 
     try {
-        const r = await fetch(`${BASE_PATH}madrid-stops.json`);
-        if (r.ok) {
-            const d = await r.json();
-            // d.stops is array of [cod, short, mode, name, lat, lng]
-            state.allStops = d.stops || [];
-            console.info(`Loaded ${state.allStops.length} Madrid stops`);
-            renderViewport();
-        }
+        await loadStops();
+        await ensureMap();
+        renderViewport();
     } catch (e) {
-        console.warn('madrid-stops.json:', e.message);
+        console.warn('loadInitial:', e.message);
     }
 }
 

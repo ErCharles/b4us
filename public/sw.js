@@ -10,11 +10,14 @@
 // project subpath (carlituus16.github.io/BUS/). API calls on .github.io go
 // to a different origin (cross-origin) so they bypass this SW automatically.
 
-const VERSION = 'v1.5.1';
+const VERSION = 'v1.7.0';
 const SHELL_CACHE = `bt-shell-${VERSION}`;
 const RUNTIME_CACHE = `bt-runtime-${VERSION}`;
 const SCOPE_PATH = new URL('./', self.location).pathname;
 
+// NOTE: madrid-stops.json (~200KB) is deliberately NOT in the shell — it would
+// block install. It's loaded on-demand by the app and cached at runtime
+// (stale-while-revalidate) by the fetch handler below.
 const SHELL = [
     SCOPE_PATH,
     SCOPE_PATH + 'index.css',
@@ -22,7 +25,6 @@ const SHELL = [
     SCOPE_PATH + 'manifest.webmanifest',
     SCOPE_PATH + 'icons/icon-192.svg',
     SCOPE_PATH + 'icons/icon-512.svg',
-    SCOPE_PATH + 'madrid-stops.json',
 ];
 
 self.addEventListener('install', (e) => {
@@ -76,6 +78,13 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    // Big static dataset: served on-demand, kept fresh in the background.
+    // Not part of the shell so it never blocks install.
+    if (url.pathname === SCOPE_PATH + 'madrid-stops.json') {
+        event.respondWith(staleWhileRevalidate(req));
+        return;
+    }
+
     if (isStableAPI(url)) {
         event.respondWith(networkFirst(req));
         return;
@@ -84,6 +93,18 @@ self.addEventListener('fetch', (event) => {
     // Default: shell — cache-first then network, populate runtime cache opportunistically.
     event.respondWith(cacheFirst(req));
 });
+
+// Serve the cached copy immediately (if any) while refetching in the
+// background to keep it fresh — ideal for the large, rarely-changing dataset.
+async function staleWhileRevalidate(req) {
+    const cache = await caches.open(RUNTIME_CACHE);
+    const cached = await cache.match(req);
+    const network = fetch(req).then((res) => {
+        if (res && res.status === 200) cache.put(req, res.clone());
+        return res;
+    }).catch(() => null);
+    return cached || network || fetch(req);
+}
 
 async function cacheFirst(req) {
     const cached = await caches.match(req);

@@ -1,0 +1,52 @@
+groups:
+  - name: b4us-backend
+    rules:
+      # Circuit breaker stuck OPEN (2) for >2m → CRTM upstream is failing hard.
+      - alert: CRTMCircuitOpen
+        expr: crtm_circuit_state == 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRTM circuit breaker is OPEN"
+          description: "crtm_circuit_state has been 2 (open) for >2m — upstream CRTM calls are short-circuited and clients only get stale/cached data."
+
+      # Backend scrape target down (>1m).
+      - alert: BackendDown
+        expr: up{job="bus-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend is down / unscrapeable"
+          description: "Prometheus cannot scrape bus-backend (up == 0) for >1m. Container down or /metrics auth broken."
+
+      # Event loop blocked → app is CPU-bound or wedged.
+      - alert: EventLoopLagHigh
+        expr: nodejs_eventloop_lag_seconds > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js event loop lag high"
+          description: "nodejs_eventloop_lag_seconds > 0.2s for >5m ({{ $value }}s). The process is struggling to keep up."
+
+      # HTTP p95 latency high (route-level histogram from fastify-metrics).
+      - alert: HTTPLatencyP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP p95 latency > 1s"
+          description: "95th percentile HTTP request duration is {{ $value }}s over the last 5m."
+
+      # Sustained CRTM upstream errors (>0.2/s over 5m).
+      - alert: CRTMUpstreamErrorsHigh
+        expr: sum(rate(crtm_upstream_errors_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CRTM upstream error rate"
+          description: "crtm_upstream_errors_total is increasing at {{ $value }}/s (5m avg) — CRTM is returning errors/timeouts."

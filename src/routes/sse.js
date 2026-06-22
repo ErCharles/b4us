@@ -5,12 +5,11 @@ const { swr } = require('../cache');
 const config = require('../config');
 const metrics = require('../metrics');
 const logger = require('../logger');
+const { normalizeStopTimes } = require('./stops');
 
 const HEARTBEAT_MS = config.sse.heartbeatInterval;
 const UPDATE_MS = config.sse.updateInterval;
-
-// Active SSE connections tracker
-const connections = new Map();
+const LIVE_OPTS = { freshTtl: config.cache.liveFreshTtl, negativeTtl: config.cache.liveNegativeTtl };
 
 const codStopParams = {
     type: 'object',
@@ -18,6 +17,59 @@ const codStopParams = {
     required: ['codStop'],
     additionalProperties: false,
 };
+
+// ONE poller per codStop, shared by all of its subscribers. The first
+// subscriber spins up the timers; the last to leave tears them down. Each
+// tick does a SINGLE upstream fetch and serialises the SSE frame ONCE, then
+// writes the same bytes to every subscriber. Cost is O(active stops), not
+// O(connections): 50 people watching the same stop = 1 fetch / 5 s, not 50.
+const pollers = new Map(); // codStop -> { subs:Set<raw>, timer, heartbeat, lastFrame, id, inflight }
+let totalConnections = 0;
+
+function broadcast(p, frame) {
+    for (const raw of p.subs) {
+        try { raw.write(frame); } catch { /* dropped socket; its close handler unsubscribes */ }
+    }
+}
+
+async function tick(codStop, p) {
+    if (p.inflight) return; // skip overlap when upstream is slow (timeout×retry > UPDATE_MS)
+    p.inflight = true;
+    try {
+        const data = await fetchStopTimes(codStop);
+        p.lastFrame = sseFrame('update', data, ++p.id);
+        broadcast(p, p.lastFrame);
+    } catch (err) {
+        // Keep the last good snapshot as lastFrame for late joiners; just push an error tick.
+        broadcast(p, sseFrame('error', { message: 'Update failed', codStop, code: err.code }, ++p.id));
+    } finally {
+        p.inflight = false;
+    }
+}
+
+function getPoller(codStop) {
+    let p = pollers.get(codStop);
+    if (p) return p;
+    p = { subs: new Set(), timer: null, heartbeat: null, lastFrame: null, id: 0, inflight: false };
+    pollers.set(codStop, p);
+    p.timer = setInterval(() => { tick(codStop, p).catch(() => {}); }, UPDATE_MS);
+    p.heartbeat = setInterval(() => broadcast(p, ': heartbeat\n\n'), HEARTBEAT_MS);
+    return p;
+}
+
+function removeSub(codStop, raw) {
+    const p = pollers.get(codStop);
+    if (!p) return;
+    if (p.subs.delete(raw)) {
+        totalConnections = Math.max(0, totalConnections - 1);
+        metrics.set('sseConnections', totalConnections);
+    }
+    if (p.subs.size === 0) {
+        clearInterval(p.timer);
+        clearInterval(p.heartbeat);
+        pollers.delete(codStop);
+    }
+}
 
 async function sseRoutes(fastify) {
     // SSE stream for a specific stop
@@ -27,69 +79,38 @@ async function sseRoutes(fastify) {
         config: { compress: false },
     }, async (req, reply) => {
         const { codStop } = req.params;
-        const connId = `${codStop}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-        let eventId = Number(req.headers['last-event-id']) || 0;
+        const raw = reply.raw;
 
-        reply.raw.writeHead(200, {
+        raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache, no-transform',
             Connection: 'keep-alive',
             'X-Accel-Buffering': 'no',
-            'Access-Control-Allow-Origin': '*',
+            'X-Content-Type-Options': 'nosniff',
+            ...corsHeaders(req),
         });
-        reply.raw.flushHeaders();
+        raw.flushHeaders();
 
-        // Tell the browser how long to wait before reconnecting after a drop.
-        // Combined with reconnecting wrapper on the frontend this gives us a
-        // steady cadence even on flaky 4G (artifact §8).
-        reply.raw.write('retry: 5000\n\n');
+        // 2 KiB comment padding defeats output buffering in intermediate
+        // proxies (notably cloudflared) so the first update reaches the browser.
+        raw.write(': ' + ' '.repeat(2048) + '\n\n');
+        raw.write('retry: 5000\n\n');
 
-        // Initial snapshot — instant paint
-        try {
-            const data = await fetchStopTimes(codStop);
-            sendEvent(reply.raw, 'update', data, ++eventId);
-        } catch (err) {
-            sendEvent(reply.raw, 'error', { message: 'Failed to load initial data', codStop }, ++eventId);
-            logger.get().warn(
-                {
-                    kind: err.upstream ? 'upstream' : 'app',
-                    component: 'sse',
-                    codStop,
-                    err: err.message,
-                    code: err.code,
-                },
-                'SSE initial load failed'
-            );
+        const p = getPoller(codStop);
+        p.subs.add(raw);
+        totalConnections += 1;
+        metrics.set('sseConnections', totalConnections);
+
+        // Instant paint: a late joiner gets the last broadcast frame as-is;
+        // a cold poller fetches now (which broadcasts to this subscriber too).
+        if (p.lastFrame) {
+            try { raw.write(p.lastFrame); } catch { /* closed already */ }
+        } else {
+            tick(codStop, p).catch(() => {});
         }
 
-        const updateTimer = setInterval(async () => {
-            try {
-                const data = await fetchStopTimes(codStop);
-                sendEvent(reply.raw, 'update', data, ++eventId);
-            } catch (err) {
-                sendEvent(reply.raw, 'error', { message: 'Update failed', codStop, code: err.code }, ++eventId);
-            }
-        }, UPDATE_MS);
-
-        const heartbeatTimer = setInterval(() => {
-            try {
-                reply.raw.write(': heartbeat\n\n');
-            } catch {
-                cleanup();
-            }
-        }, HEARTBEAT_MS);
-
-        connections.set(connId, { codStop, reply: reply.raw, updateTimer, heartbeatTimer });
-        metrics.set('sseConnections', connections.size, { stop: codStop });
-        metrics.inc('sseConnectionsTotal');
-
-        function cleanup() {
-            clearInterval(updateTimer);
-            clearInterval(heartbeatTimer);
-            connections.delete(connId);
-            metrics.set('sseConnections', byStopCount(codStop), { stop: codStop });
-        }
-
+        let closed = false;
+        const cleanup = () => { if (!closed) { closed = true; removeSub(codStop, raw); } };
         req.raw.on('close', cleanup);
         req.raw.on('error', cleanup);
 
@@ -97,102 +118,41 @@ async function sseRoutes(fastify) {
     });
 
     fastify.get('/api/sse/stats', async () => {
-        const groupedByStop = {};
-        for (const [, conn] of connections) {
-            groupedByStop[conn.codStop] = (groupedByStop[conn.codStop] || 0) + 1;
-        }
-        return {
-            totalConnections: connections.size,
-            byStop: groupedByStop,
-        };
+        const byStop = {};
+        for (const [codStop, p] of pollers) byStop[codStop] = p.subs.size;
+        return { totalConnections, activeStops: pollers.size, byStop };
     });
 }
 
 async function fetchStopTimes(codStop) {
     const key = `stops:times:${codStop}`;
-    const data = await swr(key, () => crtm.getStopTimes(codStop));
-    return normalizeForSSE(data, codStop);
+    const data = await swr(key, () => crtm.getStopTimes(codStop), LIVE_OPTS);
+    const payload = normalizeStopTimes(data, codStop);
+    payload.type = 'update';
+    return payload;
 }
 
-function byStopCount(codStop) {
-    let n = 0;
-    for (const [, c] of connections) if (c.codStop === codStop) n++;
-    return n;
+function sseFrame(event, data, id) {
+    let s = '';
+    if (id !== undefined) s += `id: ${id}\n`;
+    s += `event: ${event}\n`;
+    s += `data: ${JSON.stringify(data)}\n\n`;
+    return s;
 }
 
-function normalizeForSSE(data, codStop) {
-    if (!data?.stopTimes) {
-        return { codStop, arrivals: [], timestamp: Date.now(), type: 'empty' };
+// CORS for the hijacked raw response — @fastify/cors can't set headers on a
+// stream we write directly, so mirror the same allowlist here.
+function corsHeaders(req) {
+    const origin = req.headers.origin;
+    if (origin && config.isAllowedOrigin(origin)) {
+        return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
     }
-
-    const st = data.stopTimes;
-    const now = Date.now();
-    const arrivals = [];
-
-    const rawTimes = st.times?.Time;
-    if (rawTimes) {
-        const times = Array.isArray(rawTimes) ? rawTimes : [rawTimes];
-        for (const t of times) {
-            const arrivalEpoch = new Date(t.time).getTime();
-            const diffMs = Math.max(0, arrivalEpoch - now);
-            const secondsLeft = Math.round(diffMs / 1000);
-            const minutesLeft = Math.floor(secondsLeft / 60);
-            const secs = secondsLeft % 60;
-            arrivals.push({
-                line: t.line?.shortDescription || '',
-                lineCode: t.line?.codLine || '',
-                destination: t.destination || '',
-                direction: t.direction,
-                secondsLeft,
-                minutesLeft,
-                secs,
-                arrivalTime: t.time,
-                arrivalEpoch,
-                codVehicle: t.codVehicle || null,
-                isNight: !!(t.line?.nightService),
-                codIssue: t.codIssue || null,
-            });
-        }
-    }
-
-    const lineStatuses = {};
-    const rawStatus = st.linesStatus?.LineStatus;
-    if (rawStatus) {
-        const ls = Array.isArray(rawStatus) ? rawStatus : [rawStatus];
-        for (const s of ls) {
-            lineStatuses[s.line?.codLine] = {
-                saeActive: s.SAEStatus === true,
-                lineName: s.line?.shortDescription || '',
-            };
-        }
-    }
-
-    return {
-        codStop,
-        stopName: st.stop?.name || '',
-        arrivals: arrivals.sort((a, b) => a.secondsLeft - b.secondsLeft),
-        lineStatuses,
-        serverTime: st.actualDate || new Date().toISOString(),
-        serverEpoch: now,
-        timestamp: now,
-        type: 'update',
-    };
-}
-
-function sendEvent(stream, event, data, id) {
-    try {
-        if (id !== undefined) stream.write(`id: ${id}\n`);
-        stream.write(`event: ${event}\n`);
-        stream.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch {
-        // Connection already closed
-    }
+    return {};
 }
 
 function getConnectionCount() {
-    return connections.size;
+    return totalConnections;
 }
 
 module.exports = sseRoutes;
 module.exports.getConnectionCount = getConnectionCount;
-module.exports.normalizeForSSE = normalizeForSSE;

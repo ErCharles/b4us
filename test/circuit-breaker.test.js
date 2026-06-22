@@ -57,3 +57,15 @@ test('failure counter resets on a successful call', async () => {
     await cb.execute(async () => 'ok');
     assert.equal(cb.snapshot().failures, 0);
 });
+
+test('isFailure=false errors (client/API) do NOT open the breaker', async () => {
+    const cb = new CircuitBreaker({ name: 't6', threshold: 2, cooldownMs: 10 });
+    const notUpstream = () => false; // mimic crtm-client: only err.upstream counts
+    // A non-existent stop / bad param: upstream answered, just "no data".
+    for (let i = 0; i < 5; i++) {
+        await assert.rejects(cb.execute(async () => { throw new Error('not found'); }, notUpstream));
+    }
+    // Connectivity proven each time → stays CLOSED, failures reset.
+    assert.equal(cb.snapshot().state, STATE.CLOSED);
+    assert.equal(cb.snapshot().failures, 0);
+});

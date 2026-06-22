@@ -11,8 +11,6 @@ let log = {
     info: (...a) => console.log(...a),
     warn: (...a) => console.warn(...a),
     error: (...a) => console.error(...a),
-    debug: () => {},
-    child(bindings) { return Object.assign({}, this, { _b: bindings }); },
 };
 
 function set(l) {

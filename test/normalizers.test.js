@@ -3,10 +3,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const stopsRoute = require('../src/routes/stops');
-const sseRoute = require('../src/routes/sse');
 
 const { normalizeStopTimes, normalizeStops } = stopsRoute;
-const { normalizeForSSE } = sseRoute;
 
 test('normalizeStops returns [] for empty input', () => {
     assert.deepEqual(normalizeStops(null), []);
@@ -27,10 +25,11 @@ test('normalizeStops keeps an array as-is', () => {
     assert.equal(out.length, 2);
 });
 
-test('normalizeStopTimes returns empty arrivals on null', () => {
+test('normalizeStopTimes returns empty + lineStatuses{} on null', () => {
     const out = normalizeStopTimes({}, '8_99');
     assert.equal(out.codStop, '8_99');
     assert.deepEqual(out.arrivals, []);
+    assert.deepEqual(out.lineStatuses, {});
 });
 
 test('normalizeStopTimes computes secondsLeft from arrivalTime', () => {
@@ -65,37 +64,68 @@ test('normalizeStopTimes sorts arrivals by secondsLeft', () => {
     assert.equal(out.arrivals[1].line, '521');
 });
 
-test('normalizeForSSE includes type=update on real data', () => {
-    const data = {
-        stopTimes: {
-            stop: { name: 'X' },
-            times: { Time: [
-                { time: new Date(Date.now() + 30000).toISOString(), line: { shortDescription: '521' } },
-            ]},
-        },
-    };
-    const out = normalizeForSSE(data, '8_1');
-    assert.equal(out.type, 'update');
-    assert.equal(out.arrivals.length, 1);
-});
-
-test('normalizeForSSE returns empty stub when stopTimes absent', () => {
-    const out = normalizeForSSE({}, '8_2');
-    assert.equal(out.type, 'empty');
-    assert.deepEqual(out.arrivals, []);
-});
-
-test('normalizeStopTimes handles negative arrival times gracefully', () => {
+test('normalizeStopTimes clamps past arrivals to 0', () => {
     const past = new Date(Date.now() - 30000).toISOString();
+    const data = { stopTimes: { times: { Time: [{ time: past, line: { shortDescription: '521' } }] } } };
+    const out = normalizeStopTimes(data, '8_x');
+    assert.equal(out.arrivals[0].secondsLeft, 0);
+    assert.equal(out.arrivals[0].minutesLeft, 0);
+});
+
+// --- realtime vs scheduled flag (honest labelling) ---
+
+function at(secondsOffset, opts = {}) {
+    const d = new Date(Date.now() + 120000);
+    d.setSeconds(secondsOffset, 0); // pin the seconds field exactly
+    return { time: d.toISOString(), line: { shortDescription: 'L', codLine: opts.codLine || '9__1__092_' }, codVehicle: opts.codVehicle };
+}
+
+test('realtime=false for whole-minute (:00) time with no vehicle (timetable)', () => {
+    const out = normalizeStopTimes({ stopTimes: { times: { Time: [at(0)] } } }, '8_x');
+    assert.equal(out.arrivals[0].realtime, false);
+});
+
+test('realtime=true for sub-minute (:30) prediction', () => {
+    const out = normalizeStopTimes({ stopTimes: { times: { Time: [at(30)] } } }, '8_x');
+    assert.equal(out.arrivals[0].realtime, true);
+});
+
+test('realtime=true when a vehicle code is present even at :00', () => {
+    const out = normalizeStopTimes({ stopTimes: { times: { Time: [at(0, { codVehicle: '12345' })] } } }, '8_x');
+    assert.equal(out.arrivals[0].realtime, true);
+    assert.equal(out.arrivals[0].codVehicle, '12345');
+});
+
+// --- NaN guard: an unparseable time must be dropped, not sorted to the front ---
+
+test('normalizeStopTimes drops arrivals with unparseable time', () => {
+    const good = new Date(Date.now() + 60000).toISOString();
+    const data = {
+        stopTimes: { times: { Time: [
+            { time: 'not-a-date', line: { shortDescription: 'BAD' } },
+            { time: good, line: { shortDescription: 'OK' } },
+        ] } },
+    };
+    const out = normalizeStopTimes(data, '8_x');
+    assert.equal(out.arrivals.length, 1);
+    assert.equal(out.arrivals[0].line, 'OK');
+    assert.ok(Number.isFinite(out.arrivals[0].arrivalEpoch));
+});
+
+// --- hasArrival: lines CRTM lists but reports no time for ---
+
+test('lineStatuses marks hasArrival per line', () => {
+    const future = new Date(Date.now() + 60000).toISOString();
     const data = {
         stopTimes: {
-            times: { Time: [
-                { time: past, line: { shortDescription: '521' } },
-            ]},
+            times: { Time: [{ time: future, line: { codLine: '8__523___', shortDescription: '523' } }] },
+            linesStatus: { LineStatus: [
+                { line: { codLine: '8__523___', shortDescription: '523' }, SAEStatus: true },
+                { line: { codLine: '9__1__092_', shortDescription: '1' }, SAEStatus: true },
+            ] },
         },
     };
     const out = normalizeStopTimes(data, '8_x');
-    // diff clamped to 0 → secondsLeft is 0
-    assert.equal(out.arrivals[0].secondsLeft, 0);
-    assert.equal(out.arrivals[0].minutesLeft, 0);
+    assert.equal(out.lineStatuses['8__523___'].hasArrival, true);
+    assert.equal(out.lineStatuses['9__1__092_'].hasArrival, false);
 });

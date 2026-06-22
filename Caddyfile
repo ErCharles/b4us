@@ -1,0 +1,9 @@
+# Caddy reverse proxy for B4us.
+# Auto-HTTPS via Let's Encrypt (HTTP-01 challenge) → needs ports 80 AND 443
+# reachable from the internet (router port-forward → this host).
+# Caddy fronts the backend container published on host :3090.
+b4us.duckdns.org {
+    reverse_proxy localhost:3090
+    encode zstd gzip
+    header -Server
+}

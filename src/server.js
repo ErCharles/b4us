@@ -8,6 +8,24 @@ const { disconnect, getRedis } = require('./cache');
 const metrics = require('./metrics');
 const logger = require('./logger');
 
+// Content-Security-Policy for the frontend. The single inline <script> in
+// index.html (the <base> bootstrap) is allowed by its sha256 hash — NO
+// 'unsafe-inline' for scripts. If that inline script ever changes, regenerate
+// the hash (see public/index.html) or the page will break.
+const CSP = [
+    "default-src 'self'",
+    "script-src 'self' https://unpkg.com 'sha256-ehUfJkAtW9GMvE94R2ICDuU7/bgIox0JxHXtOCy1l7k='",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com",
+    "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org https://unpkg.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "connect-src 'self' https://b4us.pigeon-cobia.ts.net",
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+].join('; ');
+
 async function start() {
     const fastify = Fastify({
         logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -18,6 +36,16 @@ async function start() {
     // Make our shared logger forward to Fastify's Pino instance so every
     // structured log line carries reqId/responseTime when relevant.
     logger.set(fastify.log);
+
+    // Security headers on every (non-hijacked) response. Cheap, no dependency.
+    fastify.addHook('onRequest', async (req, reply) => {
+        reply.header('X-Content-Type-Options', 'nosniff');
+        reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+        reply.header('X-Frame-Options', 'DENY');
+        reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+        reply.header('Permissions-Policy', 'geolocation=(self), camera=(), microphone=(), payment=()');
+        reply.header('Content-Security-Policy', CSP);
+    });
 
     // ---------- Error handler ----------
     // Set BEFORE registering plugins so it lives at the root scope and
@@ -81,9 +109,10 @@ async function start() {
     // Weak ETag for any JSON/HTML response — gives navigators a free 304.
     await fastify.register(require('@fastify/etag'), { weak: true });
 
-    // CORS
+    // CORS — allowlist (shared with the SSE raw-response path) instead of
+    // reflecting any Origin.
     await fastify.register(require('@fastify/cors'), {
-        origin: true,
+        origin: (origin, cb) => cb(null, config.isAllowedOrigin(origin)),
         methods: ['GET', 'OPTIONS'],
         maxAge: 86400,
     });
@@ -114,7 +143,9 @@ async function start() {
             if (req.url.startsWith('/metrics')) {
                 const tok = req.query?.token || req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.headers['x-metrics-token'];
                 if (tok !== metricsToken) {
-                    reply.code(401).send({ error: 'Unauthorized' });
+                    // `return` so the handler stops here — without it the metrics
+                    // body would still be assembled and could leak.
+                    return reply.code(401).send({ error: 'Unauthorized' });
                 }
             }
         });
@@ -177,22 +208,24 @@ async function start() {
         return reply.send(privacyHtml);
     });
 
-    // ---------- Health ----------
-    // /health must never block on a broken Redis — race the ping against
-    // a 1s timeout so the container healthcheck stays snappy.
-    fastify.get('/health', async (req, reply) => {
+    // ---------- Health / readiness ----------
+    // Race a Redis ping against a 1s timeout so probes stay snappy.
+    async function pingRedis() {
         const redis = getRedis();
-        let redisOk = false;
-        if (redis.status === 'ready') {
-            try {
-                const pong = await Promise.race([
-                    redis.ping(),
-                    new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 1000)),
-                ]);
-                redisOk = pong === 'PONG';
-            } catch { /* noop */ }
-        }
+        if (redis.status !== 'ready') return false;
+        try {
+            const pong = await Promise.race([
+                redis.ping(),
+                new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 1000)),
+            ]);
+            return pong === 'PONG';
+        } catch { return false; }
+    }
 
+    // /health: rich diagnostics, always 200 (liveness — is the process up?).
+    // logLevel 'warn' keeps the every-30s probe out of the request log.
+    fastify.get('/health', { logLevel: 'warn' }, async (req, reply) => {
+        const redisOk = await pingRedis();
         const crtm = require('./crtm-client').getBreakerSnapshot();
         reply.header('Cache-Control', 'no-store');
         return {
@@ -203,6 +236,18 @@ async function start() {
             connections: require('./routes/sse').getConnectionCount(),
             crtmBreaker: { state: crtm.state, failures: crtm.failures, openedAt: crtm.openedAt },
         };
+    });
+
+    // /ready: readiness for the container healthcheck — 503 (NOT ready) when
+    // Redis is down or every CRTM breaker is open, so Docker actually restarts
+    // a backend that's wedged instead of leaving a permanently-degraded one up.
+    fastify.get('/ready', { logLevel: 'warn' }, async (req, reply) => {
+        const redisOk = await pingRedis();
+        const crtm = require('./crtm-client').getBreakerSnapshot();
+        const ready = redisOk && crtm.state !== 2; // 2 = OPEN
+        reply.header('Cache-Control', 'no-store');
+        reply.code(ready ? 200 : 503);
+        return { ready, redis: redisOk, crtmBreaker: crtm.state };
     });
 
     // ---------- Graceful shutdown ----------

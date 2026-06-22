@@ -3,14 +3,23 @@ global:
   scrape_timeout: 5s
   evaluation_interval: 30s
 
+# Alerting/recording rules. Rules show up in the Prometheus UI (Alerts tab)
+# even without an Alertmanager; notifications are wired via Grafana alerting
+# (see DEPLOY.md).
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: bus-backend
     metrics_path: /metrics
-    # Token must match METRICS_TOKEN in docker-compose.yml. Change BOTH
-    # places if you rotate it (or pass via .env so compose interpolates).
+    # Bearer token read from a file mounted into the container, NOT stored in
+    # this (git-tracked) config. The contents must equal METRICS_TOKEN in
+    # docker-compose.yml. The previous inline token (23f8cf2d…) is BURNED in
+    # git history — rotate it and write the NEW value to monitoring/metrics-token
+    # (see DEPLOY.md). That file is gitignored.
     authorization:
       type: Bearer
-      credentials: 23f8cf2dfeebe52455896b17a15fbb41
+      credentials_file: /etc/prometheus/metrics-token
     static_configs:
       - targets: ['backend:3000']
         labels:

@@ -18,6 +18,6 @@
     "@fastify/etag": "^6.0.0",
     "fastify-metrics": "^12.1.0",
     "ioredis": "^5.4.2",
-    "undici": "^7.18.0"
+    "undici": "^8.5.0"
   }
 }

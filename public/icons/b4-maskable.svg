@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0.9" y2="1">
+    <stop offset="0" stop-color="#13203d"/><stop offset="1" stop-color="#0a0f1c"/></linearGradient></defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g transform="translate(66,66) scale(0.74)">
+    <text x="250" y="342" text-anchor="middle" font-family="Geist,'Segoe UI',Arial,sans-serif" font-weight="800" font-size="250" letter-spacing="-12" fill="#F4F7FB">B4</text>
+    <g fill="none" stroke="#8EBF42" stroke-width="16" stroke-linecap="round">
+      <path d="M356 132 a52 52 0 0 1 0 84"/><path d="M388 104 a96 96 0 0 1 0 140" opacity="0.5"/></g>
+    <circle cx="338" cy="174" r="15" fill="#8EBF42"/></g>
+</svg>

@@ -10,7 +10,7 @@
 // project subpath (carlituus16.github.io/BUS/). API calls on .github.io go
 // to a different origin (cross-origin) so they bypass this SW automatically.
 
-const VERSION = 'v1.8.0';
+const VERSION = 'v1.9.0';
 const SHELL_CACHE = `bt-shell-${VERSION}`;
 const RUNTIME_CACHE = `bt-runtime-${VERSION}`;
 const SCOPE_PATH = new URL('./', self.location).pathname;
@@ -23,8 +23,8 @@ const SHELL = [
     SCOPE_PATH + 'index.css',
     SCOPE_PATH + 'app.js',
     SCOPE_PATH + 'manifest.webmanifest',
-    SCOPE_PATH + 'icons/icon-192.svg',
-    SCOPE_PATH + 'icons/icon-512.svg',
+    SCOPE_PATH + 'icons.svg',
+    SCOPE_PATH + 'favicon.svg',
 ];
 
 self.addEventListener('install', (e) => {

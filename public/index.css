@@ -1492,3 +1492,19 @@ body::before {
     transition: none !important;
   }
 }
+
+
+/* === mobile + accuracy overrides (appended; cascade wins) === */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body { overscroll-behavior: none; }
+/* iOS 100vh bug → dynamic/small viewport units (progressive: last supported wins) */
+.app { height: 100vh; height: 100svh; height: 100dvh; }
+.main-content { overscroll-behavior-y: contain; padding-bottom: calc(72px + var(--safe-bottom, 0px)); }
+.sheet-card { overscroll-behavior: contain; }
+/* Inputs >=16px so iOS Safari never auto-zooms the page on focus */
+#search-input, input[type="search"], input[type="text"], select, textarea { font-size: 16px; }
+/* Touch targets >=44px (hit area; icon glyph unchanged) */
+.icon-btn { min-width: 44px; min-height: 44px; }
+.topbar-right { gap: 6px; }
+/* Stale data cue: dim arrivals when the SSE stream has gone silent */
+.arrivals.stale { opacity: 0.5; transition: opacity .2s; }

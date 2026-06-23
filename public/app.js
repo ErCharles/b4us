@@ -61,6 +61,7 @@ const state = {
     favTickTimer: null,
     favPollTimer: null,
     serverTimeDelta: 0,
+    lastMsgAt: 0,
     mapExpanded: false,
     lastEpochs: {},
     lineStatuses: {},
@@ -475,6 +476,8 @@ function openSSE() {
             if (data.lineStatuses) state.lineStatuses = data.lineStatuses;
             renderArrivals(data);
             setConn('on');
+            state.lastMsgAt = Date.now();
+            if (arrivalsList) arrivalsList.classList.remove('stale');
             // success → reset backoff to base
             state.eventSourceBackoffMs = 1000;
         } catch (err) { console.error('SSE parse:', err); }
@@ -529,6 +532,7 @@ window.addEventListener('online', () => {
 
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
+        if (state.currentStop && arrivalsList) arrivalsList.classList.add('stale');
         // If we have an open stop and SSE is dead, reconnect.
         if (state.eventSourceUrl && !state.eventSource && !state.eventSourceTimer) {
             state.eventSourceBackoffMs = 500;
@@ -557,9 +561,11 @@ function renderArrivals(data) {
     const arr = data.arrivals || [];
     if (data.serverEpoch) {
         const newDelta = Date.now() - data.serverEpoch;
-        state.serverTimeDelta = state.serverTimeDelta
-            ? Math.round(state.serverTimeDelta * 0.7 + newDelta * 0.3)
-            : newDelta;
+        // Snap on a big jump (first sample, or after background/phone-clock change);
+        // otherwise EMA-smooth so the countdown doesn't jitter with network delay.
+        state.serverTimeDelta = (!state.serverTimeDelta || Math.abs(newDelta - state.serverTimeDelta) > 3000)
+            ? newDelta
+            : Math.round(state.serverTimeDelta * 0.7 + newDelta * 0.3);
     }
 
     if (!arr.length) {
@@ -783,6 +789,16 @@ function startCountdown() {
 
 function tick() {
     const now = Date.now() - state.serverTimeDelta;
+    // Staleness watchdog: if the SSE stream has been silent >12s (2+ missed
+    // 5s frames) the shown times are stale — dim them and nudge a reconnect,
+    // instead of counting down wrong numbers as if they were live.
+    if (state.lastMsgAt && Date.now() - state.lastMsgAt > 12000) {
+        arrivalsList.classList.add('stale');
+        if (state.eventSourceUrl && (!state.eventSource || state.eventSource.readyState !== 1) && !state.eventSourceTimer) {
+            state.eventSourceBackoffMs = 500;
+            scheduleReconnect();
+        }
+    }
     arrivalsList.querySelectorAll('.countdown[data-epoch]').forEach(el => {
         const ep = +el.dataset.epoch;
         const sec = Math.max(0, Math.floor((ep - now) / 1000));
@@ -1201,8 +1217,10 @@ prefsSheet.addEventListener('click', (e) => { if (e.target === prefsSheet) close
 [prefVibrate, prefSound, prefAutoRefresh].forEach((el) => el.addEventListener('change', persistPrefs));
 
 if (btnMenu) {
+    // Hamburger = menu. On desktop it also toggles the map; on mobile (where the
+    // map is hidden) it opens preferences so the button is never a dead tap.
     btnMenu.addEventListener('click', () => {
-        if (!isDesktop) return;
+        if (!isDesktop) { openPrefs(); return; }
         state.mapExpanded = !state.mapExpanded;
         mapContainer.classList.toggle('expanded', state.mapExpanded);
         ensureMap().then(() => setTimeout(() => map.invalidateSize(), 350));

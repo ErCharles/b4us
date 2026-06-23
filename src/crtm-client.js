@@ -26,6 +26,10 @@ function getBreaker(endpoint) {
 // Only genuine upstream/transport failures count against the breaker.
 const isUpstreamFailure = (err) => err.upstream === true;
 
+// Rolling window of upstream-error timestamps for the heartbeat log.
+let _errWin = [];
+function recentUpstreamErrors() { const c = Date.now() - 60000; _errWin = _errWin.filter((t) => t > c); return _errWin.length; }
+
 // ---------- Internal helpers ----------
 
 function endpointLabel(path) {
@@ -123,6 +127,7 @@ async function doFetch(url, endpoint, retries) {
             const status = String(err.statusCode || 'err');
             metrics.observe('crtmUpstreamLatency', dur, { endpoint, status });
             metrics.inc('crtmUpstreamErrors', { endpoint, status });
+            _errWin.push(Date.now());
             lastErr = err;
 
             logger.get().warn(
@@ -236,4 +241,5 @@ module.exports = {
     getLineLocation,
     getIncidents,
     getBreakerSnapshot,
+    recentUpstreamErrors,
 };

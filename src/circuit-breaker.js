@@ -1,6 +1,7 @@
 'use strict';
 
 const metrics = require('./metrics');
+const eventlog = require('./eventlog');
 
 const STATE = Object.freeze({ CLOSED: 0, HALF_OPEN: 1, OPEN: 2 });
 
@@ -97,6 +98,7 @@ class CircuitBreaker {
 
     _reportState() {
         metrics.set('crtmCircuitState', this.state, { name: this.name });
+        eventlog.event('breaker', { name: this.name, state: this.state, failures: this.failures });
     }
 }
 

@@ -7,6 +7,7 @@ const config = require('./config');
 const { disconnect, getRedis } = require('./cache');
 const metrics = require('./metrics');
 const logger = require('./logger');
+const eventlog = require('./eventlog');
 
 // Content-Security-Policy for the frontend. The single inline <script> in
 // index.html (the <base> bootstrap) is allowed by its sha256 hash — NO
@@ -271,6 +272,25 @@ async function start() {
 
     await fastify.listen({ port: config.port, host: config.host });
     fastify.log.info({ kind: 'app', port: config.port }, 'CRTM ETA Platform running');
+
+    // --- Rolling incident heartbeat (1/min) → logs/b4us-YYYY-MM-DD.jsonl ---
+    // High-signal vector so an incident ("ETAs gone for everyone") is traceable:
+    // breaker state per CRTM endpoint, redis health, active SSE, upstream errors.
+    eventlog.event('startup', { port: config.port, pid: process.pid });
+    const crtmClient = require('./crtm-client');
+    const sseRoutes = require('./routes/sse');
+    setInterval(() => {
+        const crtm = crtmClient.getBreakerSnapshot();
+        eventlog.event('heartbeat', {
+            redis: getRedis().status === 'ready',
+            breaker: crtm.state,
+            breakers: crtm.byEndpoint,
+            upstreamErr60s: crtmClient.recentUpstreamErrors(),
+            sse: sseRoutes.getConnectionCount(),
+            rssMB: Math.round(process.memoryUsage().rss / 1e6),
+            upMin: Math.round(process.uptime() / 60),
+        });
+    }, 60_000).unref();
 }
 
 start().catch((err) => {

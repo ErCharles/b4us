@@ -183,7 +183,9 @@ function loadLeaflet() {
 let _mapPromise = null;
 const CARTO_KEY = 'cb1_3o6s_1_95acf95a0559867c9fcf42f2';
 function cartoTileUrl(light) {
-    return `https://{s}.basemaps.cartocdn.com/${light ? 'light_all' : 'dark_all'}/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`;
+    // Formato documentado por CARTO (rastertiles, sin {r}). light_all/dark_all
+    // siguen el tema; voyager también acepta ?key=.
+    return `https://{s}.basemaps.cartocdn.com/rastertiles/${light ? 'light_all' : 'dark_all'}/{z}/{x}/{y}.png?key=${CARTO_KEY}`;
 }
 // Resolves once the Leaflet map is initialized. Safe to call repeatedly.
 function ensureMap() {

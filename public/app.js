@@ -181,6 +181,10 @@ function loadLeaflet() {
 }
 
 let _mapPromise = null;
+const CARTO_KEY = 'cb1_3o6s_1_95acf95a0559867c9fcf42f2';
+function cartoTileUrl(light) {
+    return `https://{s}.basemaps.cartocdn.com/${light ? 'light_all' : 'dark_all'}/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`;
+}
 // Resolves once the Leaflet map is initialized. Safe to call repeatedly.
 function ensureMap() {
     if (!isDesktop) return Promise.resolve(null);
@@ -197,10 +201,7 @@ function ensureMap() {
             if (t === 'dark') return false;
             return matchMedia('(prefers-color-scheme: light)').matches;
         })();
-        const tileUrl = wantLight
-            ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-        const tileLayer = L.tileLayer(tileUrl, {
+        const tileLayer = L.tileLayer(cartoTileUrl(wantLight), {
             attribution: '&copy; CARTO &copy; OSM',
             maxZoom: 19, subdomains: 'abcd',
         }).addTo(map);
@@ -1619,10 +1620,7 @@ function applyTheme(t) {
     // Update map tiles to match theme (light_all vs dark_all)
     if (window.__bus?.map && window.__bus.tileLayer) {
         const isLight = t === 'light' || (t === 'auto' && matchMedia('(prefers-color-scheme: light)').matches);
-        const url = isLight
-            ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-        window.__bus.tileLayer.setUrl(url);
+        window.__bus.tileLayer.setUrl(cartoTileUrl(isLight));
     }
     updateThemeIcon(t);
 }

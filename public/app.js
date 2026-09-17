@@ -37,7 +37,6 @@ const BASE_PATH = (() => {
 })();
 
 const PREF_KEY = 'bus_prefs_v1';
-const FAV_KEY = 'bus_favs';
 const DEFAULT_PREFS = {
     vibrate: true,
     sound: false,
@@ -52,7 +51,7 @@ const state = {
     eventSourceBackoffMs: 1000,
     eventSourceTimer: null,
     lastEventId: 0,
-    favorites: JSON.parse(localStorage.getItem(FAV_KEY) || '[]'),
+    favorites: B4usStore.getFavorites(),   // b4us-store.js es el único escritor de bus_favs
     prefs: Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY) || '{}')),
     allStops: [],            // full Madrid dataset (~11k tuples)
     markers: [],             // currently-rendered Leaflet markers
@@ -62,6 +61,7 @@ const state = {
     favPollTimer: null,
     serverTimeDelta: 0,
     lastMsgAt: 0,
+    frozenStops: new Set(),  // codStop sin ninguna llegada OK (volátil: no se persiste)
     mapExpanded: false,
     lastEpochs: {},
     lineStatuses: {},
@@ -105,6 +105,10 @@ const prefsClose = $('#prefs-close');
 const prefVibrate = $('#pref-vibrate');
 const prefSound = $('#pref-sound');
 const prefAutoRefresh = $('#pref-auto-refresh');
+const folderForm = $('#folder-form');
+const folderInput = $('#folder-input');
+const prefsExport = $('#prefs-export');
+const prefsImport = $('#prefs-import');
 
 // --- Colors ---
 // Official Madrid transport line colours. Metro / Metro Ligero / Cercanías have
@@ -475,7 +479,9 @@ function openSSE() {
             const data = JSON.parse(e.data);
             if (data.lineStatuses) state.lineStatuses = data.lineStatuses;
             renderArrivals(data);
-            setConn('on');
+            // El corte de sondeo ya cerró el stream y dejó "En pausa": este frame
+            // sigue llegando desde el buffer del EventSource y no debe resucitarlo.
+            if (state.eventSourceUrl) setConn('on');
             state.lastMsgAt = Date.now();
             if (arrivalsList) arrivalsList.classList.remove('stale');
             // success → reset backoff to base
@@ -568,11 +574,18 @@ function renderArrivals(data) {
             : Math.round(state.serverTimeDelta * 0.7 + newDelta * 0.3);
     }
 
-    if (!arr.length) {
-        // Still surface no-time lines below the empty hint via the empty state.
+    // Corte de sondeo: si no queda ninguna llegada futura, se cierra el stream
+    // (el poller del servidor muere con el último subscriber) y no se rearma.
+    // Se vuelve con "Reintentar" o recargando la página.
+    const now = Date.now() - state.serverTimeDelta;
+    const frozen = B4usStore.shouldFreezeStop(arr, now);
+    if (frozen) {
+        disconnectSSE();
+        connText.textContent = 'En pausa';
         arrivalsList.innerHTML = '';
-        renderEmptyState(data);
+        arrivalsList.classList.remove('stale');
         etaEmpty.classList.remove('hidden');
+        renderEmptyState(data, frozen);
         etaUpdated.textContent = '⚡ ' + fmtTime(new Date());
         return;
     }
@@ -748,7 +761,7 @@ function updateNotimeRow(row, item) {
 // (e.g. mode 9 — urbanos de municipios — never appears in `times.Time`
 // even with SAEStatus=true). Surface the known lines so the user can see
 // which routes pass by, with a clear hint about what's missing.
-function renderEmptyState(data) {
+function renderEmptyState(data, frozen) {
     const titleEl = document.getElementById('eta-empty-title');
     const hintEl = document.getElementById('eta-empty-hint');
     const linesEl = document.getElementById('eta-empty-lines');
@@ -758,9 +771,13 @@ function renderEmptyState(data) {
     const entries = Object.entries(statuses);
     const hour = new Date().getHours();
     const isLateNight = hour >= 1 && hour < 5;
+    // El estado del corte de sondeo manda en el título; sin él, copy de siempre.
+    const frozenTitle = frozen === B4usStore.ARRIVAL.PAST ? 'Ya pasó'
+        : frozen === B4usStore.ARRIVAL.NONE ? 'Sin horario disponible'
+        : 'Sin llegadas en vivo';
 
     if (entries.length) {
-        titleEl.textContent = 'Sin llegadas en vivo';
+        titleEl.textContent = frozenTitle;
         hintEl.textContent = isLateNight
             ? 'CRTM no devuelve tiempos a esta hora. Líneas que pasan por esta parada:'
             : 'CRTM no devuelve tiempos para esta parada ahora. Líneas conocidas:';
@@ -773,7 +790,7 @@ function renderEmptyState(data) {
                     </span>`;
         }).join('');
     } else {
-        titleEl.textContent = 'Sin llegadas en vivo';
+        titleEl.textContent = frozenTitle;
         hintEl.textContent = isLateNight
             ? 'A esta hora muchas líneas no tienen tiempo real disponible'
             : 'CRTM no está devolviendo tiempos para esta parada ahora mismo';
@@ -865,35 +882,87 @@ function playDing() {
 }
 
 // --- Favorites (multi-stop dashboard) ---
-function loadFavs() {
-    if (!state.favorites.length) {
-        favEmpty.classList.remove('hidden');
-        favList.innerHTML = '';
-        return;
-    }
-    favEmpty.classList.add('hidden');
-    favList.innerHTML = state.favorites.map(f => `
-    <div class="fav-item" role="listitem" tabindex="0" data-cod="${esc(f.codStop)}" data-name="${esc(f.name)}"
+// Una fila por parada. Sin alias manda el nombre oficial; con alias, el alias
+// (el oficial queda en el title). Los hooks data-cod / .fav-eta[data-cod] son
+// contrato con refreshFavoritesETA/tickFavs.
+function favItem(f, folders) {
+    const cod = esc(f.codStop);
+    return `
+    <div class="fav-item" role="listitem" tabindex="0" data-cod="${cod}" data-name="${esc(f.name)}"
          data-lat="${f.lat || ''}" data-lng="${f.lng || ''}">
       <div class="stop-badge">⭐</div>
       <div class="stop-info">
-        <div class="stop-name">${esc(f.name)}</div>
-        <div class="stop-addr">${esc(f.codStop)}</div>
+        <div class="stop-name${f.alias ? ' stop-alias' : ''}" title="${esc(f.name)}">${esc(f.alias || f.name)}</div>
+        <div class="fav-meta">
+          <span class="stop-addr">${cod}</span>
+          <select class="fav-folder" data-folder-cod="${cod}" aria-label="Carpeta de ${esc(f.name)}">
+            <option value="">Favoritos</option>
+            ${folders.map(x => `<option value="${esc(x.id)}"${x.id === f.folderId ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
+          </select>
+          <button class="stop-alias-edit" type="button" data-alias-cod="${cod}"
+                  title="Nombre personalizado" aria-label="Editar nombre de ${esc(f.name)}">✎</button>
+        </div>
       </div>
-      <div class="fav-eta" data-cod="${esc(f.codStop)}">
+      <div class="fav-eta" data-cod="${cod}">
         <span class="fav-eta-loading">…</span>
       </div>
-    </div>`).join('');
-    bindStopClicks(favList);
-
-    refreshFavoritesETA();
-    startFavoritesPolling();
+    </div>`;
 }
+
+// Carpetas reales en su orden, y al final la implícita "Favoritos" (id null),
+// que sólo se pinta si tiene paradas. Sin carpetas, la lista es la de siempre.
+function renderFolderBlocks(folders) {
+    if (!folders.length) return state.favorites.map(f => favItem(f, folders)).join('');
+    return folders.concat([{ id: null, name: 'Favoritos' }]).map((g) => {
+        const items = state.favorites.filter(f => (f.folderId || null) === g.id);
+        if (!g.id && !items.length) return '';
+        return `
+    <div class="folder-block" role="listitem" data-folder="${esc(g.id || '')}">
+      <div class="folder-head">
+        <span class="folder-name">${esc(g.name)}</span>
+        ${g.id ? `<button class="folder-del" type="button" data-folder-del="${esc(g.id)}"
+                        aria-label="Borrar carpeta ${esc(g.name)}">&times;</button>` : ''}
+      </div>
+      <div class="folder-items" role="list">
+        ${items.map(f => favItem(f, folders)).join('')}
+      </div>
+    </div>`;
+    }).join('');
+}
+
+function loadFavs() {
+    state.favorites = B4usStore.getFavorites();
+    const folders = B4usStore.getFolders();
+    // Sólo siguen congeladas las paradas que aún son favoritas.
+    const codes = new Set(state.favorites.map(f => f.codStop));
+    for (const cod of state.frozenStops) if (!codes.has(cod)) state.frozenStops.delete(cod);
+
+    favList.innerHTML = renderFolderBlocks(folders);
+    const empty = !state.favorites.length && !folders.length;
+    favEmpty.classList.toggle('hidden', !empty);
+    if (empty) { stopFavoritesPolling(); return; }
+
+    bindStopClicks(favList);
+    if (state.favorites.length) {
+        refreshFavoritesETA();
+        startFavoritesPolling();
+    } else {
+        stopFavoritesPolling();   // hay carpetas vacías: nada que sondear
+    }
+}
+
+const FREEZE_COPY = {
+    [B4usStore.ARRIVAL.PAST]: 'Ya pasó',
+    [B4usStore.ARRIVAL.NONE]: 'Sin horario',
+};
 
 let favCountdownStarted = false;
 async function refreshFavoritesETA() {
     if (!state.favorites.length) return;
-    const tasks = state.favorites.map(async (f) => {
+    const now = Date.now() - state.serverTimeDelta;
+    // Las congeladas no se vuelven a sondear (ahorra peticiones y ruido).
+    const targets = state.favorites.filter(f => !state.frozenStops.has(f.codStop));
+    const tasks = targets.map(async (f) => {
         try {
             const r = await fetch(`${API_BASE}/api/stops/${encodeURIComponent(f.codStop)}/times`, { cache: 'no-store' });
             if (!r.ok) throw new Error(String(r.status));
@@ -908,10 +977,24 @@ async function refreshFavoritesETA() {
         const slot = favList.querySelector(`.fav-eta[data-cod="${cssEsc(res.cod)}"]`);
         if (!slot) continue;
         if (res.error) {
+            // Error de red: no es un corte, se sigue sondeando (⚠ de siempre).
             slot.innerHTML = `<span class="fav-eta-error">⚠</span>`;
             continue;
         }
-        const next = (res.data?.arrivals || [])[0];
+        const arr = res.data?.arrivals || [];
+        const frozen = B4usStore.shouldFreezeStop(arr, now);
+        if (frozen) {
+            state.frozenStops.add(res.cod);
+            slot.innerHTML = `
+              <span class="fav-eta-frozen">${FREEZE_COPY[frozen]}</span>
+              <button class="fav-retry" type="button" data-retry-cod="${esc(res.cod)}"
+                      aria-label="Reintentar consulta en la parada ${esc(res.cod)}">Reintentar</button>`;
+            continue;
+        }
+        state.frozenStops.delete(res.cod);   // vuelve a estar viva
+        // El servidor ordena por secondsLeft y lo clampea a 0: arrivals[0] puede
+        // ser un bus que ya salió. Se muestra el primero que aún no ha pasado.
+        const next = arr.find(a => B4usStore.classifyArrival((a.arrivalEpoch - now) / 1000, true) === B4usStore.ARRIVAL.OK);
         if (!next) {
             slot.innerHTML = `<span class="fav-eta-loading">—</span>`;
             continue;
@@ -958,13 +1041,93 @@ function stopFavoritesPolling() {
     }
 }
 
+// --- Favoritos: carpetas, alias y reintento por fila ---
+// Los controles viven dentro de .fav-item y bindStopClicks engancha click y
+// Enter a TODA la fila: hay que interceptar en captura, antes de que el evento
+// llegue al ítem (si no, abriría la parada en lugar de editar/borrar).
+for (const type of ['click', 'keydown']) {
+    favList.addEventListener(type, (e) => {
+        const el = e.target.closest('.fav-retry, .stop-alias-edit, .fav-folder, .folder-del');
+        if (!el) return;
+        e.stopPropagation();
+        // keydown: el control nativo ya generará su click. select: lo suyo es el change.
+        if (e.type === 'keydown' || el.classList.contains('fav-folder')) return;
+        if (el.classList.contains('fav-retry')) {
+            state.frozenStops.delete(el.dataset.retryCod);   // descongela y reintenta
+            refreshFavoritesETA();
+        } else if (el.classList.contains('stop-alias-edit')) {
+            editAlias(el.dataset.aliasCod);
+        } else {
+            deleteFolderUI(el.dataset.folderDel);
+        }
+    }, true);
+}
+
+favList.addEventListener('change', (e) => {
+    const sel = e.target.closest('.fav-folder');
+    if (!sel) return;
+    B4usStore.setFolder(sel.dataset.folderCod, sel.value || null);
+    loadFavs();
+});
+
+function editAlias(codStop) {
+    const fav = state.favorites.find(f => f.codStop === codStop);
+    if (!fav) return;
+    const next = prompt('Nombre personalizado de la parada (vacío para quitarlo):', fav.alias || '');
+    if (next === null) return;
+    const saved = B4usStore.setAlias(codStop, next);
+    if (!saved) return;
+    state.favorites = B4usStore.getFavorites();
+    const nameEl = favList.querySelector(`.fav-item[data-cod="${cssEsc(codStop)}"] .stop-name`);
+    if (nameEl) {
+        nameEl.textContent = saved.alias || saved.name;
+        nameEl.classList.toggle('stop-alias', !!saved.alias);
+    }
+}
+
+function deleteFolderUI(id) {
+    const moved = B4usStore.deleteFolder(id);   // las paradas vuelven a Favoritos
+    loadFavs();
+    if (moved) flashToast(`${moved} ${moved === 1 ? 'parada vuelve' : 'paradas vuelven'} a Favoritos`);
+}
+
+// Nueva carpeta.
+folderForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!B4usStore.createFolder(folderInput.value)) return;   // nombre vacío: no-op
+    folderInput.value = '';
+    loadFavs();
+});
+
+// Copia de seguridad: exporta y fusiona carpetas + favoritos (nunca prefs).
+prefsExport.addEventListener('click', () => {
+    const blob = new Blob([B4usStore.exportJSON()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `b4us-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+});
+
+prefsImport.addEventListener('change', async () => {
+    const file = prefsImport.files?.[0];
+    prefsImport.value = '';   // poder reimportar el mismo fichero
+    if (!file) return;
+    const res = B4usStore.importJSON(await file.text());
+    flashToast(res.ok
+        ? `Importado: ${res.added} nuevas · ${res.updated} actualizadas`
+        : 'Archivo no válido');
+    if (res.ok) loadFavs();
+});
+
 function toggleFav() {
     if (!state.currentStop) return;
     const { codStop, name, lat, lng } = state.currentStop;
-    const i = state.favorites.findIndex(f => f.codStop === codStop);
-    if (i >= 0) state.favorites.splice(i, 1);
-    else state.favorites.push({ codStop, name, lat, lng });
-    localStorage.setItem(FAV_KEY, JSON.stringify(state.favorites));
+    B4usStore.toggleFavorite({ codStop, name, lat, lng });
+    state.favorites = B4usStore.getFavorites();
     updateFavBtn();
     loadFavs();
 }
@@ -1326,7 +1489,15 @@ window.addEventListener('appinstalled', () => {
 });
 
 // --- Helpers ---
-function esc(s) { if (s === null || s === undefined) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+// esc() se usa también dentro de atributos (title, data-name, aria-label), y
+// innerHTML NO escapa las comillas: se escapan aquí o un nombre con " rompe el
+// atributo y permite inyectar HTML.
+function esc(s) {
+    if (s === null || s === undefined) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 function cssEsc(s) { return String(s).replace(/[^a-zA-Z0-9_\-]/g, (c) => '\\' + c); }
 function fmtTime(d) { return d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 function modeIcon(c) { return { '4': '🚇', '5': '🚆', '6': '🚍', '8': '🚌', '10': '🚊' }[String(c)] || '🚌'; }
@@ -1418,13 +1589,18 @@ function showEtaUpstreamError() {
       </div>`;
     etaEmpty.classList.add('hidden');
     const btn = document.getElementById('eta-retry');
-    if (btn) btn.addEventListener('click', () => {
-        if (!state.currentStop) return;
-        const { codStop, name, lat, lng } = state.currentStop;
-        // Re-trigger selectStop. Skip pushState (we're already at this URL).
-        selectStop(codStop, name, lat, lng, { fromHistory: true });
-    });
+    if (btn) btn.addEventListener('click', retryEta);
 }
+
+// Reintento manual de la parada abierta (botón del panel vacío y del error de
+// CRTM). selectStop ya hace exactamente eso — skeleton + /times + connectSSE —
+// sin reescribir el historial (seguimos en la misma URL).
+function retryEta() {
+    if (!state.currentStop) return;
+    const { codStop, name, lat, lng } = state.currentStop;
+    selectStop(codStop, name, lat, lng, { fromHistory: true });
+}
+$('#btn-retry-eta')?.addEventListener('click', retryEta);
 
 // --- Theme toggle ---
 // Three states: 'auto' (follows OS), 'dark', 'light'. Stored in localStorage.

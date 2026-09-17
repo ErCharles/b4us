@@ -1316,6 +1316,148 @@ body::before {
   color: var(--arriving);
 }
 
+/* --- Carpetas, alias y corte de sondeo --- */
+.folder-block { margin-top: 20px; }
+
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.folder-del {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.folder-del:hover { color: var(--imminent); }
+
+.folder-form,
+.pref-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.folder-form { margin-top: 18px; }
+
+.folder-form input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.folder-form input[type="text"]::placeholder { color: var(--text-3); }
+
+.folder-form button,
+.pref-actions button,
+.pref-actions label {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folder-form button:hover,
+.pref-actions button:hover,
+.pref-actions label:hover {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.folder-form input[type="text"]:focus-visible,
+.folder-form button:focus-visible,
+.pref-actions button:focus-visible,
+.pref-actions label:focus-visible,
+.folder-del:focus-visible,
+.stop-alias-edit:focus-visible,
+.fav-folder:focus-visible,
+.fav-retry:focus-visible {
+  outline: none;
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+/* Nombre personalizado y controles de cada fila */
+.stop-alias { color: var(--accent); }
+
+.fav-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.fav-meta .stop-addr { margin-top: 0; }
+
+.fav-folder {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 2px;
+  max-width: 110px;
+}
+
+.stop-alias-edit {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.stop-alias-edit:hover { color: var(--accent); }
+
+/* Parada congelada: no hay nada que esperar, se deja de sondear */
+.fav-eta-frozen {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.fav-retry {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.fav-retry:hover { color: var(--text); border-color: var(--accent-line); }
+
+#eta-empty .upstream-retry-btn { margin-top: 16px; }
+
 .ghost-btn {
   margin-left: auto;
   background: transparent;

@@ -105,6 +105,11 @@
           <button id="favs-toggle-prefs" class="ghost-btn" aria-label="Preferencias"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true"><use href="icons.svg#i-settings"/></svg></button>
         </div>
         <div id="favorites-list" role="list"></div>
+        <form id="folder-form" class="folder-form" autocomplete="off">
+          <label for="folder-input" class="visually-hidden">Nueva carpeta</label>
+          <input id="folder-input" type="text" maxlength="40" placeholder="Nueva carpeta" />
+          <button type="submit">Añadir</button>
+        </form>
         <div id="favorites-empty" class="empty-msg">
           <p>Sin favoritos</p>
           <p class="hint">Busca una parada y pulsa ★</p>
@@ -135,6 +140,7 @@
           <p id="eta-empty-title">Sin próximas llegadas</p>
           <p class="hint" id="eta-empty-hint">CRTM no está devolviendo tiempos para esta parada ahora mismo</p>
           <div id="eta-empty-lines" class="eta-empty-lines"></div>
+          <button id="btn-retry-eta" class="upstream-retry-btn" type="button">Reintentar</button>
         </div>
 
         <div class="eta-footer">
@@ -191,11 +197,20 @@
           <span>Auto-actualizar favoritos</span>
           <input type="checkbox" id="pref-auto-refresh" />
         </label>
+        <div class="pref-row">
+          <span>Copia de seguridad</span>
+          <span class="pref-actions">
+            <button type="button" id="prefs-export">Exportar</button>
+            <label for="prefs-import">Importar</label>
+            <input type="file" id="prefs-import" class="visually-hidden" accept="application/json,.json" />
+          </span>
+        </div>
         <button id="prefs-close" class="sheet-close">Cerrar</button>
       </div>
     </div>
   </div>
 
+  <script src="b4us-store.js"></script>
   <script src="app.js"></script>
 </body>
 

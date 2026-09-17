@@ -41,3 +41,5 @@ npm test    # node --test test/*.test.js
 ```
 
 El frontend está en `public/` (se publica en GitHub Pages) y el backend en `src/`.
+
+Mapa (escritorio): teselas CARTO raster con `?key=` — ver [DEPLOY.md §5](DEPLOY.md).

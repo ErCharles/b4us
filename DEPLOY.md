@@ -144,3 +144,15 @@ Prometheus at it.
   fs scan (report-only) on push/PR/weekly.
 - `.github/dependabot.yml`: weekly npm + github-actions update PRs.
 - `.github/workflows/pages.yml`: unchanged; deploys `public/` to GitHub Pages.
+
+---
+
+## 5. Frontend vs API, mapa CARTO
+
+- **Frontend de producción = GitHub Pages** (`https://ercharles.github.io/b4us/`). El contenedor `bus-backend` **no monta** `public/`: `https://b4us.pigeon-cobia.ts.net` sirve JS de la **imagen** (viejo hasta `docker compose build backend`). Para el mapa, abre Pages.
+- Teselas Leaflet: `cartoTileUrl()` en `public/app.js`. Formato CARTO (watermark si no):
+  `https://{s}.basemaps.cartocdn.com/rastertiles/{light_all|dark_all}/{z}/{x}/{y}.png?key=…`
+  Sin `{r}`. Docs: https://carto.com/basemaps/apikey
+- Key en `CARTO_KEY` (cliente; restringir en dashboard). Referer: `ercharles.github.io` y `b4us.pigeon-cobia.ts.net`. **No** activar «Restrict to mobile apps» (es PWA). **No** IPs de origen.
+- Cambio de `app.js` → bump `VERSION` en `public/sw.js` o el SW sirve el JS viejo.
+- ETAs: si `/ready` 200 y `/times` 502/timeout, es CRTM (`GetStopsTimes.php`), no B4us.
